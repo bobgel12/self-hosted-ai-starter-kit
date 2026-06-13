@@ -1,0 +1,26 @@
+{
+  "waterPctChange": {
+    "enabled": true,
+    "threshold": 20,
+    "severity": "warning"
+  },
+  "heaterPctChange": {
+    "enabled": true,
+    "threshold": 25,
+    "severity": "warning"
+  },
+  "waterZeroWithBirds": {
+    "enabled": true,
+    "minGrowthDay": 1,
+    "severity": "critical"
+  },
+  "houseDisconnected": {
+    "enabled": true,
+    "severity": "critical"
+  },
+  "heaterZeroWithBirds": {
+    "enabled": true,
+    "minGrowthDay": 3,
+    "severity": "warning"
+  }
+}

@@ -1,1 +1,7 @@
 .env
+shared/rotem/farms.json
+shared/rotem/farms.test.json
+shared/rotem/history/**/*
+!shared/rotem/history/.gitkeep
+shared/rotem/outbox/**/*
+!shared/rotem/outbox/.gitkeep

@@ -1,0 +1,229 @@
+{
+  "id": "R7rzl5TsKVrVR7gg",
+  "name": "Poultry RotemNet Daily Overview",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "a1b2c3d4-manual-trigger-0001",
+      "name": "Manual Test Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [{ "field": "hours" }]
+        }
+      },
+      "id": "a1b2c3d4-schedule-trigger-0002",
+      "name": "Hourly Schedule",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [240, 480]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const fs = require('fs');\nconst { filterFarmsForSchedule } = require('/data/shared/rotem/lib/compare-anomaly.js');\n\nconst manual =\n  (typeof $execution !== 'undefined' && ['manual', 'test', 'cli'].includes($execution.mode)) ||\n  ($('Manual Test Trigger').isExecuted === true);\n\nconst config = JSON.parse(fs.readFileSync('/data/shared/rotem/farms.json', 'utf8'));\nconst thresholds = JSON.parse(fs.readFileSync('/data/shared/rotem/thresholds.json', 'utf8'));\n\nconst farms = (config.farms || []).filter((farm) => {\n  if (manual) return true;\n  return filterFarmsForSchedule([farm], farm.timezone);\n});\n\nif (farms.length === 0) {\n  return [{ json: { skipped: true, reason: manual ? 'no_farms_configured' : 'no_farms_due_this_hour' } }];\n}\n\nreturn farms.map((farm) => ({\n  json: {\n    farm,\n    config,\n    thresholds,\n    manual,\n    skipScheduleCheck: manual,\n    skipped: false,\n  },\n}));"
+      },
+      "id": "a1b2c3d4-prepare-queue-0003",
+      "name": "Prepare Farm Queue",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [520, 390]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "farm-id-present",
+              "leftValue": "={{ $json.farm.id }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "a1b2c3d4-if-farms-due-0004",
+      "name": "Any Farms Due?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [760, 390]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const fs = require('fs');\nconst ROTEM_ROOT = '/data/shared/rotem';\n\n// Task runner caches require() — bust cache so volume-mounted lib updates apply.\nfor (const mod of [`${ROTEM_ROOT}/lib/orchestrator.js`, `${ROTEM_ROOT}/lib/rotem-client.js`]) {\n  try {\n    delete require.cache[require.resolve(mod)];\n  } catch {}\n}\n\nconst { processFarm } = require(`${ROTEM_ROOT}/lib/orchestrator.js`);\nconst source = $json;\n\n// Always load credentials from disk; do not trust farm object passed through n8n items.\nconst config = JSON.parse(fs.readFileSync(`${ROTEM_ROOT}/farms.json`, 'utf8'));\nconst thresholds = JSON.parse(fs.readFileSync(`${ROTEM_ROOT}/thresholds.json`, 'utf8'));\nconst farm = (config.farms || []).find((f) => f.id === source.farm?.id);\n\nif (!farm) {\n  return {\n    json: {\n      skipped: false,\n      error: true,\n      farmId: source.farm?.id,\n      farmName: source.farm?.displayName || source.farm?.id,\n      message: `Farm not found in farms.json: ${source.farm?.id}`,\n      config,\n    },\n  };\n}\n\nif (!farm.rotemUsername || !farm.rotemPassword) {\n  return {\n    json: {\n      skipped: false,\n      error: true,\n      farmId: farm.id,\n      farmName: farm.displayName || farm.id,\n      message: 'Missing rotemUsername or rotemPassword in farms.json',\n      config,\n    },\n  };\n}\n\ntry {\n  const result = await processFarm(farm, config, thresholds, {\n    skipScheduleCheck: source.skipScheduleCheck || source.manual,\n  });\n\n  if (result.skipped) {\n    return {\n      json: {\n        skipped: true,\n        reason: result.reason,\n        farmId: result.farmId,\n        config,\n        error: false,\n      },\n    };\n  }\n\n  return {\n    json: {\n      ...result,\n      config,\n      error: false,\n      skipped: false,\n    },\n  };\n} catch (error) {\n  return {\n    json: {\n      skipped: false,\n      error: true,\n      farmId: farm.id,\n      farmName: farm.displayName || farm.id,\n      message: error.message,\n      config,\n    },\n  };\n}"
+      },
+      "id": "a1b2c3d4-run-farm-script-0013",
+      "name": "Process Farm",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1020, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "success-no-error",
+              "leftValue": "={{ $json.error }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "notEquals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "a1b2c3d4-if-success-0006",
+      "name": "Report OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [1260, 300]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const fs = require('fs');\nconst path = require('path');\n\nconst item = $input.item.json;\nconst email = item.email;\nif (!email) throw new Error('Missing email payload');\n\nconst outbox = '/data/shared/rotem/outbox';\nfs.mkdirSync(outbox, { recursive: true });\nconst slug = `${item.farmId}-${Date.now()}`;\nconst htmlPath = path.join(outbox, `${slug}.html`);\nconst metaPath = path.join(outbox, `${slug}.meta.json`);\n\nfs.writeFileSync(htmlPath, email.html);\nfs.writeFileSync(path.join(outbox, `${slug}.txt`), email.text);\nfs.writeFileSync(\n  metaPath,\n  JSON.stringify(\n    {\n      to: email.to,\n      from: email.from,\n      subject: email.subject,\n      farmId: item.farmId,\n      alertCount: item.report?.alertCount ?? 0,\n      savedAt: new Date().toISOString(),\n    },\n    null,\n    2,\n  ),\n);\n\nreturn {\n  json: {\n    ...item,\n    outboxPath: htmlPath,\n    outboxMetaPath: metaPath,\n  },\n};"
+      },
+      "id": "a1b2c3d4-save-outbox-0011",
+      "name": "Save Report Outbox",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1480, 200]
+    },
+    {
+      "parameters": {
+        "fromEmail": "={{ $json.email.from }}",
+        "toEmail": "={{ $json.email.to }}",
+        "subject": "={{ $json.email.subject }}",
+        "emailFormat": "html",
+        "html": "={{ $json.email.html }}",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "id": "a1b2c3d4-send-report-0007",
+      "name": "Send Report Email",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 1,
+      "position": [1700, 200],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const item = $input.item.json;\nconst config = item.config || {};\nconst to = config.recipientEmail || 'you@example.com';\nconst from = config.senderEmail || to;\nconst farmLabel = item.farmName || item.farmId || 'unknown farm';\n\nreturn {\n  json: {\n    ...item,\n    email: {\n      to,\n      from,\n      subject: `[RotemNet] Error — ${farmLabel}`,\n      html: `<!DOCTYPE html><html><body style=\"font-family:Arial,sans-serif\"><h2>RotemNet workflow error</h2><p><strong>Farm:</strong> ${farmLabel}</p><pre style=\"background:#fef2f2;padding:12px;border-radius:6px\">${item.message || 'Unknown error'}</pre><p style=\"color:#6b7280;font-size:12px\">${new Date().toISOString()}</p></body></html>`,\n      text: `RotemNet workflow error for ${farmLabel}: ${item.message || 'Unknown error'}`,\n    },\n  },\n};"
+      },
+      "id": "a1b2c3d4-build-error-0008",
+      "name": "Build Error Email",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1480, 420]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const fs = require('fs');\nconst path = require('path');\nconst item = $input.item.json;\nconst email = item.email;\nconst outbox = '/data/shared/rotem/outbox';\nfs.mkdirSync(outbox, { recursive: true });\nconst slug = `error-${item.farmId || 'unknown'}-${Date.now()}`;\nconst htmlPath = path.join(outbox, `${slug}.html`);\nfs.writeFileSync(htmlPath, email.html);\nfs.writeFileSync(path.join(outbox, `${slug}.txt`), email.text);\nreturn { json: { ...item, outboxPath: htmlPath } };"
+      },
+      "id": "a1b2c3d4-save-error-outbox-0012",
+      "name": "Save Error Outbox",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1700, 420]
+    },
+    {
+      "parameters": {
+        "fromEmail": "={{ $json.email.from }}",
+        "toEmail": "={{ $json.email.to }}",
+        "subject": "={{ $json.email.subject }}",
+        "emailFormat": "html",
+        "html": "={{ $json.email.html }}",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "id": "a1b2c3d4-send-error-0009",
+      "name": "Send Error Email",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 1,
+      "position": [1920, 420],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "content": "## Poultry RotemNet Daily Overview\n\n**Setup**\n1. `shared/rotem/farms.json` — farm credentials\n2. Assign **SMTP credential** on Send Report Email (optional; reports always saved to `shared/rotem/outbox/`)\n3. Run **Manual Test Trigger** (~1–2 min per farm; one item per farm from Prepare Farm Queue)\n\n**Report includes:** water last 3 flock days per house, heater runtime last 2 days + 2-day total per house, DoD summary, alerts.\n\n**Speed tuning (CLI):** `ROTEM_HOUSE_CONCURRENCY=4` (default), `ROTEM_FARM_CONCURRENCY=2`\n\n**Schedule:** Hourly; farms run at **6 AM** and **6 PM** local time.",
+        "height": 300,
+        "width": 420
+      },
+      "id": "a1b2c3d4-sticky-note-0010",
+      "name": "Setup Notes",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [220, 40]
+    }
+  ],
+  "connections": {
+    "Manual Test Trigger": {
+      "main": [[{ "node": "Prepare Farm Queue", "type": "main", "index": 0 }]]
+    },
+    "Hourly Schedule": {
+      "main": [[{ "node": "Prepare Farm Queue", "type": "main", "index": 0 }]]
+    },
+    "Prepare Farm Queue": {
+      "main": [[{ "node": "Any Farms Due?", "type": "main", "index": 0 }]]
+    },
+    "Any Farms Due?": {
+      "main": [[{ "node": "Process Farm", "type": "main", "index": 0 }]]
+    },
+    "Process Farm": {
+      "main": [[{ "node": "Report OK?", "type": "main", "index": 0 }]]
+    },
+    "Report OK?": {
+      "main": [
+        [{ "node": "Save Report Outbox", "type": "main", "index": 0 }],
+        [{ "node": "Build Error Email", "type": "main", "index": 0 }]
+      ]
+    },
+    "Save Report Outbox": {
+      "main": [[{ "node": "Send Report Email", "type": "main", "index": 0 }]]
+    },
+    "Build Error Email": {
+      "main": [[{ "node": "Save Error Outbox", "type": "main", "index": 0 }]]
+    },
+    "Save Error Outbox": {
+      "main": [[{ "node": "Send Error Email", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "America/Chicago",
+    "executionTimeout": 3600
+  },
+  "staticData": null,
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "pinData": {},
+  "tags": [{ "name": "poultry" }, { "name": "rotemnet" }],
+  "active": false
+}

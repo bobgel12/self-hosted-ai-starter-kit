@@ -1,0 +1,12 @@
+{
+  "task-runners": [
+    {
+      "runner-type": "javascript",
+      "env-overrides": {
+        "NODE_FUNCTION_ALLOW_BUILTIN": "fs,path,crypto,http,https,buffer,zlib,url",
+        "NODE_FUNCTION_ALLOW_EXTERNAL": "*",
+        "N8N_RUNNERS_TASK_TIMEOUT": "3600"
+      }
+    }
+  ]
+}

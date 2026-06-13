@@ -1,0 +1,24 @@
+{
+  "recipientEmail": "bobgel12@gmail.com",
+  "senderEmail": "reports@yourdomain.com",
+  "farms": [
+    {
+      "id": "bobby-angel",
+      "displayName": "Bobby Angel Farm",
+      "timezone": "America/New_York",
+      "rotemUsername": "pcnllc6@gmail.com",
+      "rotemPassword": "5080farm!Resaca",
+      "dataSource": "rotem_direct",
+      "djangoBaseUrl": null
+    },
+    {
+      "id": "vistaridge",
+      "displayName": "Vistaridge Farm",
+      "timezone": "America/New_York",
+      "rotemUsername": "vistaridge12@gmail.com",
+      "rotemPassword": "891Farm!",
+      "dataSource": "rotem_direct",
+      "djangoBaseUrl": null
+    }
+  ]
+}
