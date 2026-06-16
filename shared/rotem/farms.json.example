@@ -1,6 +1,12 @@
 {
   "recipientEmail": "bobgel12@gmail.com",
   "senderEmail": "reports@yourdomain.com",
+  "smtp": {
+    "provider": "resend",
+    "host": "smtp.resend.com",
+    "user": "resend",
+    "password": "YOUR_RESEND_API_KEY"
+  },
   "farms": [
     {
       "id": "bobby-angel",

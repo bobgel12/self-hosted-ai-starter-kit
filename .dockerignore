@@ -1,8 +1,15 @@
 .env
-.railway/
+.env.*
+!.env.example
+.git
+.gitignore
+**/.DS_Store
 shared/rotem/farms.json
 shared/rotem/farms.test.json
 shared/rotem/history/**/*
 !shared/rotem/history/.gitkeep
 shared/rotem/outbox/**/*
 !shared/rotem/outbox/.gitkeep
+shared/rotem/logs/**/*
+!shared/rotem/logs/.gitkeep
+**/node_modules

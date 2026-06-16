@@ -113,21 +113,14 @@
     },
     {
       "parameters": {
-        "fromEmail": "={{ $json.email.from }}",
-        "toEmail": "={{ $json.email.to }}",
-        "subject": "={{ $json.email.subject }}",
-        "emailFormat": "html",
-        "html": "={{ $json.email.html }}",
-        "options": {
-          "appendAttribution": false
-        }
+        "mode": "runOnceForEachItem",
+        "jsCode": "const fs = require('fs');\nconst { sendEmail } = require('/data/shared/rotem/lib/email-sender.js');\n\nconst item = $input.item.json;\nconst email = item.email;\nif (!email) {\n  return { json: { ...item, emailSent: false, emailError: 'Missing email payload' } };\n}\n\nconst config = JSON.parse(fs.readFileSync('/data/shared/rotem/farms.json', 'utf8'));\nconst smtp = { ...(config.smtp || {}), useApi: true };\n\ntry {\n  const result = await sendEmail(email, smtp);\n  return {\n    json: {\n      ...item,\n      emailSent: true,\n      emailProvider: result.provider,\n      emailId: result.id,\n    },\n  };\n} catch (err) {\n  return {\n    json: {\n      ...item,\n      emailSent: false,\n      emailError: err.message,\n    },\n  };\n}"
       },
       "id": "a1b2c3d4-send-report-0007",
       "name": "Send Report Email",
-      "type": "n8n-nodes-base.emailSend",
-      "typeVersion": 1,
-      "position": [1700, 200],
-      "continueOnFail": true
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1700, 200]
     },
     {
       "parameters": {
@@ -153,25 +146,18 @@
     },
     {
       "parameters": {
-        "fromEmail": "={{ $json.email.from }}",
-        "toEmail": "={{ $json.email.to }}",
-        "subject": "={{ $json.email.subject }}",
-        "emailFormat": "html",
-        "html": "={{ $json.email.html }}",
-        "options": {
-          "appendAttribution": false
-        }
+        "mode": "runOnceForEachItem",
+        "jsCode": "const fs = require('fs');\nconst { sendEmail } = require('/data/shared/rotem/lib/email-sender.js');\n\nconst item = $input.item.json;\nconst email = item.email;\nif (!email) {\n  return { json: { ...item, emailSent: false, emailError: 'Missing email payload' } };\n}\n\nconst config = JSON.parse(fs.readFileSync('/data/shared/rotem/farms.json', 'utf8'));\nconst smtp = { ...(config.smtp || {}), useApi: true };\n\ntry {\n  const result = await sendEmail(email, smtp);\n  return {\n    json: {\n      ...item,\n      emailSent: true,\n      emailProvider: result.provider,\n      emailId: result.id,\n    },\n  };\n} catch (err) {\n  return {\n    json: {\n      ...item,\n      emailSent: false,\n      emailError: err.message,\n    },\n  };\n}"
       },
       "id": "a1b2c3d4-send-error-0009",
       "name": "Send Error Email",
-      "type": "n8n-nodes-base.emailSend",
-      "typeVersion": 1,
-      "position": [1920, 420],
-      "continueOnFail": true
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1920, 420]
     },
     {
       "parameters": {
-        "content": "## Poultry RotemNet Daily Overview\n\n**Setup**\n1. `shared/rotem/farms.json` — farm credentials\n2. Assign **SMTP credential** on Send Report Email (optional; reports always saved to `shared/rotem/outbox/`)\n3. Run **Manual Test Trigger** (~1–2 min per farm; one item per farm from Prepare Farm Queue)\n\n**Report includes:** water last 3 flock days per house, heater runtime last 2 days + 2-day total per house, DoD summary, alerts.\n\n**Speed tuning (CLI):** `ROTEM_HOUSE_CONCURRENCY=4` (default), `ROTEM_FARM_CONCURRENCY=2`\n\n**Schedule:** Hourly; farms run at **6 AM** and **6 PM** local time.",
+        "content": "## Poultry RotemNet Daily Overview\n\n**Setup**\n1. `shared/rotem/farms.json` — farm + `smtp` block (Resend API key as `password`)\n2. Email via **Resend HTTPS API** (Railway blocks SMTP on Hobby plan)\n3. Run **Manual Test Trigger** (~1–2 min per farm)\n\n**Schedule:** Hourly; farms run at **6 AM** and **6 PM** Eastern.",
         "height": 300,
         "width": 420
       },

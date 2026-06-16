@@ -2,9 +2,11 @@
 
 const { runPool, parseConcurrencyEnv } = require('./concurrency');
 
-const LOGIN_URL = 'https://rotemnetweb.com/Latest/Services/AllServices.svc/Login';
-const LOGIN_REFERER = 'https://rotemnetweb.com/Latest/rotemWebApp/User.html';
-const BASE_ORIGIN = 'https://rotemnetweb.com';
+const API_BASE_URL = 'https://rotemnetweb.com/api/';
+const LOGIN_URL = `${API_BASE_URL}Login`;
+const UI_ORIGIN = 'https://ui.rotemnetweb.com';
+const LOGIN_REFERER = `${UI_ORIGIN}/RotemWebApp/User.html`;
+const MAIN_REFERER = `${UI_ORIGIN}/RotemWebApp/Main.html`;
 const USER_AGENT =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
@@ -64,16 +66,17 @@ function extractLoginArtifacts(body) {
   const farmConn = ro?.FarmConnectionInfo ?? body?.FarmConnectionInfo ?? {};
 
   let webServerUrl = body?.WebServerUrl ?? ro?.WebServerUrl ?? farmConn?.WebServerUrl ?? '';
+  if (!webServerUrl) webServerUrl = API_BASE_URL;
   if (webServerUrl && !webServerUrl.endsWith('/')) webServerUrl += '/';
   if (webServerUrl && !webServerUrl.startsWith('http')) {
-    webServerUrl = `${BASE_ORIGIN}/${webServerUrl}`;
+    webServerUrl = `https://rotemnetweb.com/${webServerUrl.replace(/^\//, '')}`;
   }
 
   return {
     webServerUrl,
     userToken: farmUser?.UserToken ?? ro?.UserToken ?? '',
     connectionToken: farmConn?.ConnectionToken ?? ro?.ConnectionToken ?? '',
-    gatewayName: farmConn?.GatewayName ?? ro?.GatewayName ?? '',
+    gatewayName: farmConn?.GatewayName ?? farmUser?.GatewayName ?? ro?.GatewayName ?? '',
     contextId: body?.contextId ?? ro?.contextId ?? '',
   };
 }
@@ -229,13 +232,15 @@ class RotemClient {
   async post(url, body, extraHeaders = {}) {
     const headers = {
       'Content-Type': 'application/json;charset=UTF-8',
-      Origin: BASE_ORIGIN,
+      Origin: UI_ORIGIN,
       'X-Requested-With': 'XMLHttpRequest',
       'User-Agent': USER_AGENT,
       userLanguage: 'ENGLISH',
-      authorization: '',
       ...extraHeaders,
     };
+    if (this.session?.userToken && !headers.Authorization && !headers.authorization) {
+      headers.Authorization = `Bearer ${this.session.userToken}`;
+    }
     if (Object.keys(this.cookies).length) {
       headers.Cookie = cookieHeader(this.cookies);
     }
@@ -272,18 +277,20 @@ class RotemClient {
     return responseBody;
   }
 
-  buildAuthHeaders(refererPath = 'rotemWebApp/Main.html') {
-    const referer = `${this.session.webServerUrl}${refererPath.replace(/^\//, '')}`;
+  buildAuthHeaders(referer = MAIN_REFERER) {
     return {
       userToken: this.session.userToken,
-      farmConnectionToken: this.session.connectionToken,
+      Authorization: `Bearer ${this.session.userToken}`,
+      ...(this.session.connectionToken
+        ? { farmConnectionToken: this.session.connectionToken }
+        : {}),
       Referer: referer,
       ...(this.session.contextId ? { contextId: this.session.contextId } : {}),
     };
   }
 
   serviceUrl(endpoint) {
-    return `${this.session.webServerUrl}Services/AllServices.svc/${endpoint}`;
+    return `${this.session.webServerUrl}${endpoint}`;
   }
 
   async login(username, password) {
@@ -309,9 +316,9 @@ class RotemClient {
     }
 
     const artifacts = extractLoginArtifacts(body);
-    if (!artifacts.webServerUrl || !artifacts.userToken || !artifacts.connectionToken) {
+    if (!artifacts.userToken) {
       throw new Error(
-        'RotemNet login succeeded but farm context is missing (UserToken/ConnectionToken/WebServerUrl)',
+        'RotemNet login succeeded but farm context is missing (UserToken)',
       );
     }
 
@@ -465,7 +472,10 @@ class RotemClient {
     const controllers = unwrapResponse(controllersBody);
     const registration = unwrapResponse(registrationBody)?.FarmRegistration ?? {};
     const farmName =
-      registration.FarmName ?? farm.displayName ?? farm.id;
+      registration.FarmName ??
+      registration.GatewayAliasName ??
+      farm.displayName ??
+      farm.id;
     const houses = controllers?.FarmHouses ?? [];
 
     const reportHouses = await runPool(
