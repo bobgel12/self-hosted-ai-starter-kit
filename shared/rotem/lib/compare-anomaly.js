@@ -91,6 +91,7 @@ function compareWithSnapshot(currentReport, previousSnapshot) {
         hasPrevious: true,
         previousSavedAt: previousSnapshot.savedAt,
         previousReportPeriod: previousSnapshot.reportPeriod,
+        snapshotGrowthDay: prev.growthDay ?? null,
         snapshotWaterTotal: prev.waterTodayTotal,
         snapshotHeaterMinutes: prev.heaterTodayMinutes,
         snapshotWaterDelta: waterDelta,
@@ -107,6 +108,53 @@ function compareWithSnapshot(currentReport, previousSnapshot) {
     comparisonNote: `Compared against snapshot from ${previousSnapshot.savedAt}.`,
     houses,
   };
+}
+
+function lastNAllNull(rows) {
+  if (!rows || !rows.length) return true;
+  return rows.every((r) => r.total == null);
+}
+
+/**
+ * Water % uses the last two finished flock days. The newest history row is the
+ * in-progress day and is not comparable to a completed day.
+ */
+function completedWaterChange(house) {
+  const days = house.water?.last3Days;
+  if (!Array.isArray(days) || days.length < 3) return null;
+  const prior = days[days.length - 3];
+  const completed = days[days.length - 2];
+  if (prior?.total == null || completed?.total == null) return null;
+  const priorTotal = Number(prior.total);
+  const completedTotal = Number(completed.total);
+  if (!(priorTotal > 0) || Number.isNaN(completedTotal)) return null;
+  return {
+    completedDay: completed.growthDay,
+    priorDay: prior.growthDay,
+    completedTotal,
+    priorTotal,
+    pct: Math.round(((completedTotal - priorTotal) / priorTotal) * 1000) / 10,
+  };
+}
+
+function snapshotAgeHours(savedAt) {
+  if (!savedAt) return Infinity;
+  const ageMs = Date.now() - new Date(savedAt).getTime();
+  if (Number.isNaN(ageMs) || ageMs < 0) return Infinity;
+  return ageMs / (1000 * 60 * 60);
+}
+
+function isSnapshotComparable(house, thresholds) {
+  const comparison = house.comparison;
+  if (!comparison?.hasPrevious) return false;
+  const maxAgeHours = thresholds?.snapshot?.maxAgeHours ?? 36;
+  const maxGrowthDayDelta = thresholds?.snapshot?.maxGrowthDayDelta ?? 1;
+  if (snapshotAgeHours(comparison.previousSavedAt) > maxAgeHours) return false;
+  const currentDay = house.growthDay;
+  const prevDay = comparison.snapshotGrowthDay;
+  if (currentDay == null || prevDay == null) return false;
+  if (Math.abs(currentDay - prevDay) > maxGrowthDayDelta) return false;
+  return true;
 }
 
 function detectAnomalies(report, thresholds) {
@@ -127,14 +175,40 @@ function detectAnomalies(report, thresholds) {
       continue;
     }
 
-    const growthDay = house.growthDay ?? 0;
-    const waterPct = house.water?.pctChange;
+    if (house.fetchError) {
+      alerts.push({
+        severity: 'warning',
+        houseNumber: house.houseNumber,
+        houseName: house.houseName,
+        metric: 'fetch',
+        message: `${label} history could not be loaded (${house.fetchError}).`,
+      });
+      continue;
+    }
+
+    const growthDay = house.growthDay;
+    if (growthDay == null || growthDay < 1) {
+      continue;
+    }
+
+    const waterToday = house.water?.todayTotal ?? 0;
+    const waterYesterday = house.water?.yesterdayTotal ?? 0;
+    const heaterToday = house.heaters?.todayTotalMinutes ?? 0;
+    const heaterYesterday = house.heaters?.yesterdayTotalMinutes ?? 0;
+    const waterHistoryMissing = lastNAllNull(house.water?.last3Days);
+    const heaterHistoryMissing = lastNAllNull(house.heaters?.last2Days);
+    const skipWaterRules = waterHistoryMissing && waterToday === 0;
+    const skipHeaterRules = heaterHistoryMissing && heaterToday === 0;
+
+    const completedWater = completedWaterChange(house);
     const heaterPct = house.heaters?.pctChange;
+    let flockHeaterPctAlert = false;
 
     if (
+      !skipWaterRules &&
       t.waterZeroWithBirds?.enabled &&
       growthDay >= (t.waterZeroWithBirds.minGrowthDay ?? 1) &&
-      (house.water?.todayTotal ?? 0) === 0
+      waterToday === 0
     ) {
       alerts.push({
         severity: t.waterZeroWithBirds.severity || 'critical',
@@ -145,13 +219,20 @@ function detectAnomalies(report, thresholds) {
       });
     }
 
+    const heaterZero = t.heaterZeroWithBirds || {};
+    const minHeaterDay = heaterZero.minGrowthDay ?? 3;
+    const maxHeaterDay = heaterZero.maxGrowthDay ?? 14;
+    const minYesterdayMinutes = heaterZero.minYesterdayMinutes ?? 30;
     if (
-      t.heaterZeroWithBirds?.enabled &&
-      growthDay >= (t.heaterZeroWithBirds.minGrowthDay ?? 3) &&
-      (house.heaters?.todayTotalMinutes ?? 0) === 0
+      !skipHeaterRules &&
+      heaterZero.enabled &&
+      growthDay >= minHeaterDay &&
+      growthDay <= maxHeaterDay &&
+      heaterToday === 0 &&
+      heaterYesterday >= minYesterdayMinutes
     ) {
       alerts.push({
-        severity: t.heaterZeroWithBirds.severity || 'warning',
+        severity: heaterZero.severity || 'warning',
         houseNumber: house.houseNumber,
         houseName: house.houseName,
         metric: 'heater',
@@ -159,25 +240,44 @@ function detectAnomalies(report, thresholds) {
       });
     }
 
-    if (t.waterPctChange?.enabled && waterPct != null) {
-      const limit = t.waterPctChange.threshold ?? 20;
-      if (Math.abs(waterPct) >= limit) {
+    const waterPctRule = t.waterPctChange || {};
+    const waterMinBaseline = waterPctRule.minBaseline ?? 100;
+    if (
+      !skipWaterRules &&
+      waterPctRule.enabled &&
+      completedWater &&
+      completedWater.priorTotal >= waterMinBaseline
+    ) {
+      const limit = waterPctRule.threshold ?? 20;
+      if (Math.abs(completedWater.pct) >= limit) {
         alerts.push({
-          severity: t.waterPctChange.severity || 'warning',
+          severity: waterPctRule.severity || 'warning',
           houseNumber: house.houseNumber,
           houseName: house.houseName,
           metric: 'water',
-          message: `${label} water changed ${waterPct}% vs prior growth day (threshold ±${limit}%).`,
-          value: waterPct,
+          message: `${label} water changed ${completedWater.pct}% vs prior completed growth day (day ${completedWater.completedDay} vs day ${completedWater.priorDay}, threshold ±${limit}%). Today's total is still in progress.`,
+          value: completedWater.pct,
         });
       }
     }
 
-    if (t.heaterPctChange?.enabled && heaterPct != null) {
-      const limit = t.heaterPctChange.threshold ?? 25;
+    const heaterPctRule = t.heaterPctChange || {};
+    const heaterMinBaseline = heaterPctRule.minBaseline ?? 30;
+    const heaterPctMaxDay = heaterPctRule.maxGrowthDay ?? heaterZero.maxGrowthDay ?? 14;
+    const heaterPctMinDay = heaterPctRule.minGrowthDay ?? heaterZero.minGrowthDay ?? 3;
+    if (
+      !skipHeaterRules &&
+      heaterPctRule.enabled &&
+      heaterPct != null &&
+      growthDay >= heaterPctMinDay &&
+      growthDay <= heaterPctMaxDay &&
+      heaterYesterday >= heaterMinBaseline
+    ) {
+      const limit = heaterPctRule.threshold ?? 50;
       if (Math.abs(heaterPct) >= limit) {
+        flockHeaterPctAlert = true;
         alerts.push({
-          severity: t.heaterPctChange.severity || 'warning',
+          severity: heaterPctRule.severity || 'warning',
           houseNumber: house.houseNumber,
           houseName: house.houseName,
           metric: 'heater',
@@ -187,30 +287,21 @@ function detectAnomalies(report, thresholds) {
       }
     }
 
-    if (house.comparison?.hasPrevious) {
-      const snapWaterPct = house.comparison.snapshotWaterPct;
+    if (isSnapshotComparable(house, t)) {
       const snapHeaterPct = house.comparison.snapshotHeaterPct;
+      const snapHeaterBaseline = house.comparison.snapshotHeaterMinutes ?? 0;
       if (
-        t.waterPctChange?.enabled &&
-        snapWaterPct != null &&
-        Math.abs(snapWaterPct) >= (t.waterPctChange.threshold ?? 20)
-      ) {
-        alerts.push({
-          severity: t.waterPctChange.severity || 'warning',
-          houseNumber: house.houseNumber,
-          houseName: house.houseName,
-          metric: 'water_snapshot',
-          message: `${label} water changed ${snapWaterPct}% since last report run.`,
-          value: snapWaterPct,
-        });
-      }
-      if (
-        t.heaterPctChange?.enabled &&
+        !skipHeaterRules &&
+        !flockHeaterPctAlert &&
+        heaterPctRule.enabled &&
         snapHeaterPct != null &&
-        Math.abs(snapHeaterPct) >= (t.heaterPctChange.threshold ?? 25)
+        growthDay >= heaterPctMinDay &&
+        growthDay <= heaterPctMaxDay &&
+        snapHeaterBaseline >= heaterMinBaseline &&
+        Math.abs(snapHeaterPct) >= (heaterPctRule.threshold ?? 50)
       ) {
         alerts.push({
-          severity: t.heaterPctChange.severity || 'warning',
+          severity: heaterPctRule.severity || 'warning',
           houseNumber: house.houseNumber,
           houseName: house.houseName,
           metric: 'heater_snapshot',
@@ -268,4 +359,7 @@ module.exports = {
   detectAnomalies,
   getReportPeriod,
   filterFarmsForSchedule,
+  lastNAllNull,
+  isSnapshotComparable,
+  completedWaterChange,
 };

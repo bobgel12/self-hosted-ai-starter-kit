@@ -62,7 +62,7 @@ async function main() {
 
   console.log(`Processing ${farms.length} farm(s)...`);
   const farmConcurrency = parseConcurrencyEnv('ROTEM_FARM_CONCURRENCY', 2);
-  const houseConcurrency = parseConcurrencyEnv('ROTEM_HOUSE_CONCURRENCY', 4);
+  const houseConcurrency = parseConcurrencyEnv('ROTEM_HOUSE_CONCURRENCY', 2);
   console.log(
     `Concurrency: farms=${farmConcurrency}, houses=${houseConcurrency}`,
   );

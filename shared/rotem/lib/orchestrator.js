@@ -110,7 +110,7 @@ function httpRequest(options, redirectCount = 0, retryCount = 0) {
           headers[key.toLowerCase()] = value;
         }
 
-        const transient = [502, 503, 504].includes(status);
+        const transient = [500, 502, 503, 504].includes(status);
         if (transient && retryCount < maxRetries) {
           const delayMs = 2000 * (retryCount + 1);
           setTimeout(() => {
@@ -126,7 +126,18 @@ function httpRequest(options, redirectCount = 0, retryCount = 0) {
     req.setTimeout(timeoutMs, () => {
       req.destroy(new Error(`Request timeout after ${timeoutMs}ms`));
     });
-    req.on('error', reject);
+    req.on('error', (err) => {
+      const msg = String(err?.message || err);
+      const transient = /socket hang up|ECONNRESET|ETIMEDOUT|EAI_AGAIN|timeout/i.test(msg);
+      if (transient && retryCount < maxRetries) {
+        const delayMs = 2000 * (retryCount + 1);
+        setTimeout(() => {
+          httpRequest(options, redirectCount, retryCount + 1).then(resolve, reject);
+        }, delayMs);
+        return;
+      }
+      reject(err);
+    });
 
     if (payload) {
       req.write(payload);
@@ -161,7 +172,7 @@ async function processFarm(farm, globalConfig, thresholds, options = {}) {
         delayMs: 500,
         timeoutMs: 60000,
         houseConcurrency:
-          options.houseConcurrency ?? parseConcurrencyEnv('ROTEM_HOUSE_CONCURRENCY', 4),
+          options.houseConcurrency ?? parseConcurrencyEnv('ROTEM_HOUSE_CONCURRENCY', 2),
       },
     );
     report = await client.fetchFarmReport(farm);

@@ -1,12 +1,20 @@
 {
+  "snapshot": {
+    "maxAgeHours": 36,
+    "maxGrowthDayDelta": 1
+  },
   "waterPctChange": {
     "enabled": true,
     "threshold": 20,
+    "minBaseline": 100,
     "severity": "warning"
   },
   "heaterPctChange": {
     "enabled": true,
-    "threshold": 25,
+    "threshold": 50,
+    "minBaseline": 30,
+    "minGrowthDay": 3,
+    "maxGrowthDay": 14,
     "severity": "warning"
   },
   "waterZeroWithBirds": {
@@ -21,6 +29,8 @@
   "heaterZeroWithBirds": {
     "enabled": true,
     "minGrowthDay": 3,
+    "maxGrowthDay": 14,
+    "minYesterdayMinutes": 30,
     "severity": "warning"
   }
 }

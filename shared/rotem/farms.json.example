@@ -14,6 +14,7 @@
       "timezone": "America/New_York",
       "rotemUsername": "pcnllc6@gmail.com",
       "rotemPassword": "5080farm!Resaca",
+      "rotemGatewayCode": "tace01000155",
       "dataSource": "rotem_direct",
       "djangoBaseUrl": null
     },
@@ -23,6 +24,7 @@
       "timezone": "America/New_York",
       "rotemUsername": "vistaridge12@gmail.com",
       "rotemPassword": "891Farm!",
+      "rotemGatewayCode": "047039701132",
       "dataSource": "rotem_direct",
       "djangoBaseUrl": null
     }

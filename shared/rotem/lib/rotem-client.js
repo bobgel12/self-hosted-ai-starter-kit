@@ -217,13 +217,45 @@ function sumLastNDays(rows) {
   return rows.reduce((sum, r) => sum + (r.total ?? 0), 0);
 }
 
+function commandDataReady(body) {
+  const payload = unwrapResponse(body);
+  return Boolean(payload && payload.dsData);
+}
+
+function emptyHouseReport(house, errorMessage) {
+  const houseNumber = house.HouseNumber;
+  return {
+    houseNumber,
+    houseName: house.HouseName ?? `House ${houseNumber}`,
+    growthDay: house.GrowthDay ?? null,
+    connectionStatus: house.ConnectionStatus ?? 0,
+    fetchError: errorMessage,
+    water: {
+      todayTotal: null,
+      yesterdayTotal: null,
+      pctChange: null,
+      last3Days: [],
+      historyRows: [],
+    },
+    heaters: {
+      todayTotalMinutes: null,
+      yesterdayTotalMinutes: null,
+      pctChange: null,
+      last2Days: [],
+      last2DaysTotalMinutes: null,
+      devices: [],
+      historyRows: [],
+    },
+  };
+}
+
 class RotemClient {
   constructor(httpRequest, options = {}) {
     this.httpRequest = httpRequest;
     this.delayMs = options.delayMs ?? 500;
     this.timeoutMs = options.timeoutMs ?? 60000;
     this.houseConcurrency =
-      options.houseConcurrency ?? parseConcurrencyEnv('ROTEM_HOUSE_CONCURRENCY', 4);
+      options.houseConcurrency ?? parseConcurrencyEnv('ROTEM_HOUSE_CONCURRENCY', 2);
     this.cookies = {};
     this.session = null;
     this._cookieLock = Promise.resolve();
@@ -293,37 +325,58 @@ class RotemClient {
     return `${this.session.webServerUrl}${endpoint}`;
   }
 
-  async login(username, password) {
-    const body = await this.post(
-      LOGIN_URL,
-      {
-        prmUsername: username,
-        prmPassword: password,
-        prmIsNativeAppLogin: false,
-        prmIsKeepMeSignedIn: false,
-      },
-      { userToken: 'null', Referer: LOGIN_REFERER },
-    );
+  async login(username, password, options = {}) {
+    this._username = username;
+    this._password = password;
+    const gatewayOverride = options.gatewayCode || this._gatewayCode || '';
+    this._gatewayCode = gatewayOverride;
 
-    if (!responseSucceeded(body)) {
-      const msg =
-        body?.ErrorObj?.ErrorMessage ??
-        body?.ErrorObj ??
-        body?.reponseObj?.ErrorObj?.ErrorMessage ??
-        body?.reponseObj?.ErrorObj ??
-        'Login failed — check username and password';
-      throw new Error(`RotemNet login failed: ${JSON.stringify(msg)}`);
-    }
-
-    const artifacts = extractLoginArtifacts(body);
-    if (!artifacts.userToken) {
-      throw new Error(
-        'RotemNet login succeeded but farm context is missing (UserToken)',
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      const body = await this.post(
+        LOGIN_URL,
+        {
+          prmUsername: username,
+          prmPassword: password,
+          prmIsNativeAppLogin: false,
+          prmIsKeepMeSignedIn: false,
+        },
+        { userToken: 'null', Referer: LOGIN_REFERER },
       );
+
+      if (!responseSucceeded(body)) {
+        const msg =
+          body?.ErrorObj?.ErrorMessage ??
+          body?.ErrorObj ??
+          body?.reponseObj?.ErrorObj?.ErrorMessage ??
+          body?.reponseObj?.ErrorObj ??
+          'Login failed — check username and password';
+        throw new Error(`RotemNet login failed: ${JSON.stringify(msg)}`);
+      }
+
+      const artifacts = extractLoginArtifacts(body);
+      if (!artifacts.userToken) {
+        throw new Error(
+          'RotemNet login succeeded but farm context is missing (UserToken)',
+        );
+      }
+
+      if (!artifacts.gatewayName && gatewayOverride) {
+        artifacts.gatewayName = gatewayOverride;
+      }
+
+      if (artifacts.gatewayName) {
+        this.session = artifacts;
+        return artifacts;
+      }
+
+      if (attempt < 3) {
+        await sleep(500 * attempt);
+      }
     }
 
-    this.session = artifacts;
-    return artifacts;
+    throw new Error(
+      'RotemNet login succeeded but farm gateway is missing (GatewayName). Retry or set rotemGatewayCode in farms.json',
+    );
   }
 
   ensureAuthorized(body) {
@@ -359,7 +412,7 @@ class RotemClient {
   }
 
   async getCommandData(houseNumber, commandId) {
-    return this.callService('RNBL_GetCommandData', {
+    const payload = {
       prmGetCommandDataParams: {
         CommandID: String(commandId),
         IsSetPointCommand: false,
@@ -370,7 +423,20 @@ class RotemClient {
         PageNumber: -1,
         IsLoadPageFromCache: false,
       },
-    });
+    };
+
+    let last;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      last = await this.callService('RNBL_GetCommandData', payload);
+      if (commandDataReady(last)) return last;
+      if (attempt === 2) {
+        await this.login(this._username, this._password, {
+          gatewayCode: this._gatewayCode || this.session?.gatewayName,
+        });
+      }
+      if (attempt < 3) await sleep(1000 * attempt);
+    }
+    return last;
   }
 
   async fetchHouseReport(house) {
@@ -385,6 +451,12 @@ class RotemClient {
 
     if (connectionStatus === 1) {
       const liveBody = await this.getCommandData(houseNumber, '0');
+      if (!commandDataReady(liveBody)) {
+        return emptyHouseReport(
+          house,
+          'RotemNet returned no live data after retries',
+        );
+      }
       liveData = parseLiveHouseData(unwrapResponse(liveBody));
       await sleep(this.delayMs);
 
@@ -392,6 +464,13 @@ class RotemClient {
       await sleep(this.delayMs);
       const heaterBody = await this.getCommandData(houseNumber, '43');
       await sleep(this.delayMs);
+
+      if (!commandDataReady(waterBody) || !commandDataReady(heaterBody)) {
+        return emptyHouseReport(
+          house,
+          'RotemNet returned no history after retries',
+        );
+      }
 
       waterHistory = parseWaterHistoryRows(
         unwrapResponse(waterBody)?.dsData?.Data ?? [],
@@ -464,7 +543,9 @@ class RotemClient {
       throw new Error('django_proxy dataSource is not wired yet; use rotem_direct');
     }
 
-    await this.login(farm.rotemUsername, farm.rotemPassword);
+    await this.login(farm.rotemUsername, farm.rotemPassword, {
+      gatewayCode: farm.rotemGatewayCode,
+    });
 
     const controllersBody = await this.getSiteControllersInfo();
     const registrationBody = await this.getFarmRegistration();
@@ -477,12 +558,19 @@ class RotemClient {
       farm.displayName ??
       farm.id;
     const houses = controllers?.FarmHouses ?? [];
+    if (houses.length === 0) {
+      throw new Error(
+        'RotemNet returned no houses — gateway context may be missing; retry or set rotemGatewayCode in farms.json',
+      );
+    }
 
-    const reportHouses = await runPool(
-      houses,
-      this.houseConcurrency,
-      (house) => this.fetchHouseReport(house),
-    );
+    const reportHouses = await runPool(houses, this.houseConcurrency, async (house) => {
+      try {
+        return await this.fetchHouseReport(house);
+      } catch (err) {
+        return emptyHouseReport(house, err.message);
+      }
+    });
 
     return {
       farmId: farm.id,
