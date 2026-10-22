@@ -330,8 +330,11 @@ class RotemClient {
     this._password = password;
     const gatewayOverride = options.gatewayCode || this._gatewayCode || '';
     this._gatewayCode = gatewayOverride;
+    // FarmConnectionInfo (ConnectionToken) is intermittent on /api/Login.
+    // Without farmConnectionToken, GetSiteControllersInfo returns empty houses.
+    const maxAttempts = options.maxAttempts ?? 8;
 
-    for (let attempt = 1; attempt <= 3; attempt++) {
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       const body = await this.post(
         LOGIN_URL,
         {
@@ -364,18 +367,18 @@ class RotemClient {
         artifacts.gatewayName = gatewayOverride;
       }
 
-      if (artifacts.gatewayName) {
+      if (artifacts.gatewayName && artifacts.connectionToken) {
         this.session = artifacts;
         return artifacts;
       }
 
-      if (attempt < 3) {
-        await sleep(500 * attempt);
+      if (attempt < maxAttempts) {
+        await sleep(400 * attempt);
       }
     }
 
     throw new Error(
-      'RotemNet login succeeded but farm gateway is missing (GatewayName). Retry or set rotemGatewayCode in farms.json',
+      'RotemNet login succeeded but farm connection is missing (ConnectionToken/GatewayName). Retry or set rotemGatewayCode in farms.json',
     );
   }
 
@@ -547,20 +550,28 @@ class RotemClient {
       gatewayCode: farm.rotemGatewayCode,
     });
 
-    const controllersBody = await this.getSiteControllersInfo();
-    const registrationBody = await this.getFarmRegistration();
+    let controllersBody = await this.getSiteControllersInfo();
+    let controllers = unwrapResponse(controllersBody);
+    let houses = controllers?.FarmHouses ?? [];
+    if (houses.length === 0) {
+      await this.login(farm.rotemUsername, farm.rotemPassword, {
+        gatewayCode: farm.rotemGatewayCode,
+      });
+      controllersBody = await this.getSiteControllersInfo();
+      controllers = unwrapResponse(controllersBody);
+      houses = controllers?.FarmHouses ?? [];
+    }
 
-    const controllers = unwrapResponse(controllersBody);
+    const registrationBody = await this.getFarmRegistration();
     const registration = unwrapResponse(registrationBody)?.FarmRegistration ?? {};
     const farmName =
       registration.FarmName ??
       registration.GatewayAliasName ??
       farm.displayName ??
       farm.id;
-    const houses = controllers?.FarmHouses ?? [];
     if (houses.length === 0) {
       throw new Error(
-        'RotemNet returned no houses — gateway context may be missing; retry or set rotemGatewayCode in farms.json',
+        'RotemNet returned no houses — farmConnectionToken/gateway context may be missing; retry or set rotemGatewayCode in farms.json',
       );
     }
 
