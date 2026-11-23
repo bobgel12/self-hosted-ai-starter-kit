@@ -330,8 +330,8 @@ class RotemClient {
     this._password = password;
     const gatewayOverride = options.gatewayCode || this._gatewayCode || '';
     this._gatewayCode = gatewayOverride;
-    // FarmConnectionInfo (ConnectionToken) is intermittent on /api/Login.
-    // Without farmConnectionToken, GetSiteControllersInfo returns empty houses.
+    // FarmConnectionInfo (ConnectionToken) is often null unless KeepMeSignedIn
+    // is true. Without farmConnectionToken, GetSiteControllersInfo returns empty houses.
     const maxAttempts = options.maxAttempts ?? 8;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -341,7 +341,8 @@ class RotemClient {
           prmUsername: username,
           prmPassword: password,
           prmIsNativeAppLogin: false,
-          prmIsKeepMeSignedIn: false,
+          // Required for FarmConnectionInfo/ConnectionToken on current Rotem API.
+          prmIsKeepMeSignedIn: true,
         },
         { userToken: 'null', Referer: LOGIN_REFERER },
       );
