@@ -77,6 +77,8 @@ function extractLoginArtifacts(body) {
     userToken: farmUser?.UserToken ?? ro?.UserToken ?? '',
     connectionToken: farmConn?.ConnectionToken ?? ro?.ConnectionToken ?? '',
     gatewayName: farmConn?.GatewayName ?? farmUser?.GatewayName ?? ro?.GatewayName ?? '',
+    gatewayAliasName:
+      farmConn?.GatewayAliasName ?? farmUser?.GatewayAliasName ?? ro?.GatewayAliasName ?? '',
     contextId: body?.contextId ?? ro?.contextId ?? '',
   };
 }
@@ -219,7 +221,14 @@ function sumLastNDays(rows) {
 
 function commandDataReady(body) {
   const payload = unwrapResponse(body);
-  return Boolean(payload && payload.dsData);
+  const ds = payload?.dsData;
+  if (!ds) return false;
+  // eRNBLResult-only payloads (e.g. Value 5) mean the controller command failed.
+  return Boolean(
+    (Array.isArray(ds.General) && ds.General.length) ||
+      (Array.isArray(ds.Data) && ds.Data.length) ||
+      (Array.isArray(ds.Consumption) && ds.Consumption.length),
+  );
 }
 
 function emptyHouseReport(house, errorMessage) {
@@ -370,7 +379,8 @@ class RotemClient {
 
       if (artifacts.gatewayName && artifacts.connectionToken) {
         this.session = artifacts;
-        return artifacts;
+        await this.connectToGateway();
+        return this.session;
       }
 
       if (attempt < maxAttempts) {
@@ -381,6 +391,39 @@ class RotemClient {
     throw new Error(
       'RotemNet login succeeded but farm connection is missing (ConnectionToken/GatewayName). Retry or set rotemGatewayCode in farms.json',
     );
+  }
+
+  /**
+   * Required after login on the new Rotem API. Without it, RNBL_GetCommandData
+   * returns empty eRNBLResult payloads and all metrics look like zeros.
+   */
+  async connectToGateway() {
+    if (!this.session?.gatewayName) return null;
+    const body = await this.post(
+      this.serviceUrl('Gateways/ConnectToGateway'),
+      {
+        prmGatewayCode: this.session.gatewayName,
+        prmGatewayAliasName:
+          this.session.gatewayAliasName || this.session.gatewayName,
+      },
+      this.buildAuthHeaders(),
+    );
+    if (!responseSucceeded(body)) {
+      throw new Error(
+        `RotemNet ConnectToGateway failed: ${JSON.stringify(body?.ErrorObj ?? body)}`,
+      );
+    }
+    const connected = extractLoginArtifacts(body);
+    if (connected.connectionToken) {
+      this.session.connectionToken = connected.connectionToken;
+    }
+    if (connected.gatewayName) {
+      this.session.gatewayName = connected.gatewayName;
+    }
+    if (connected.gatewayAliasName) {
+      this.session.gatewayAliasName = connected.gatewayAliasName;
+    }
+    return body;
   }
 
   ensureAuthorized(body) {
@@ -423,7 +466,8 @@ class RotemClient {
         HouseNumber: String(houseNumber),
         RoomNumber: -1,
         ClientLanguageIndex: 1,
-        IsIgnoreCache: false,
+        // Cached/empty responses return only eRNBLResult; ignore cache for live totals.
+        IsIgnoreCache: true,
         PageNumber: -1,
         IsLoadPageFromCache: false,
       },
@@ -437,6 +481,12 @@ class RotemClient {
         await this.login(this._username, this._password, {
           gatewayCode: this._gatewayCode || this.session?.gatewayName,
         });
+      } else if (attempt === 1) {
+        try {
+          await this.connectToGateway();
+        } catch {
+          // login retry on next attempt
+        }
       }
       if (attempt < 3) await sleep(1000 * attempt);
     }
