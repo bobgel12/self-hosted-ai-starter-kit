@@ -377,10 +377,23 @@ class RotemClient {
         artifacts.gatewayName = gatewayOverride;
       }
 
-      if (artifacts.gatewayName && artifacts.connectionToken) {
+      // ConnectionToken is often missing on first Login for some accounts even
+      // with KeepMeSignedIn. ConnectToGateway still works with UserToken +
+      // gateway code and returns a fresh ConnectionToken.
+      if (artifacts.gatewayName) {
         this.session = artifacts;
-        await this.connectToGateway();
-        return this.session;
+        try {
+          await this.connectToGateway();
+        } catch (err) {
+          if (attempt < maxAttempts) {
+            await sleep(400 * attempt);
+            continue;
+          }
+          throw err;
+        }
+        if (this.session.connectionToken || this.session.gatewayName) {
+          return this.session;
+        }
       }
 
       if (attempt < maxAttempts) {

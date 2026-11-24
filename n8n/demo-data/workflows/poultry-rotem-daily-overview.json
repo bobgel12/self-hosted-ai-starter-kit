@@ -12,6 +12,20 @@
     },
     {
       "parameters": {
+        "httpMethod": "POST",
+        "path": "rotem-daily-overview",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "a1b2c3d4-webhook-trigger-0014",
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [240, 160],
+      "webhookId": "rotem-daily-overview"
+    },
+    {
+      "parameters": {
         "rule": {
           "interval": [{ "field": "hours" }]
         }
@@ -25,7 +39,7 @@
     {
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const fs = require('fs');\nconst { filterFarmsForSchedule } = require('/data/shared/rotem/lib/compare-anomaly.js');\n\nconst manual =\n  (typeof $execution !== 'undefined' && ['manual', 'test', 'cli'].includes($execution.mode)) ||\n  ($('Manual Test Trigger').isExecuted === true);\n\nconst config = JSON.parse(fs.readFileSync('/data/shared/rotem/farms.json', 'utf8'));\nconst thresholds = JSON.parse(fs.readFileSync('/data/shared/rotem/thresholds.json', 'utf8'));\n\nconst farms = (config.farms || []).filter((farm) => {\n  if (manual) return true;\n  return filterFarmsForSchedule([farm], farm.timezone);\n});\n\nif (farms.length === 0) {\n  return [{ json: { skipped: true, reason: manual ? 'no_farms_configured' : 'no_farms_due_this_hour' } }];\n}\n\nreturn farms.map((farm) => ({\n  json: {\n    farm,\n    config,\n    thresholds,\n    manual,\n    skipScheduleCheck: manual,\n    skipped: false,\n  },\n}));"
+        "jsCode": "const fs = require('fs');\nconst { filterFarmsForSchedule } = require('/data/shared/rotem/lib/compare-anomaly.js');\n\nlet webhookRan = false;\ntry { webhookRan = $('Webhook Trigger').isExecuted === true; } catch {}\nconst manual =\n  (typeof $execution !== 'undefined' && ['manual', 'test', 'cli', 'webhook'].includes($execution.mode)) ||\n  ($('Manual Test Trigger').isExecuted === true) ||\n  webhookRan;\n\nconst config = JSON.parse(fs.readFileSync('/data/shared/rotem/farms.json', 'utf8'));\nconst thresholds = JSON.parse(fs.readFileSync('/data/shared/rotem/thresholds.json', 'utf8'));\n\nconst farms = (config.farms || []).filter((farm) => {\n  if (manual) return true;\n  return filterFarmsForSchedule([farm], farm.timezone);\n});\n\nif (farms.length === 0) {\n  return [{ json: { skipped: true, reason: manual ? 'no_farms_configured' : 'no_farms_due_this_hour' } }];\n}\n\nreturn farms.map((farm) => ({\n  json: {\n    farm,\n    config,\n    thresholds,\n    manual,\n    skipScheduleCheck: manual,\n    skipped: false,\n  },\n}));"
       },
       "id": "a1b2c3d4-prepare-queue-0003",
       "name": "Prepare Farm Queue",
@@ -172,6 +186,9 @@
     "Manual Test Trigger": {
       "main": [[{ "node": "Prepare Farm Queue", "type": "main", "index": 0 }]]
     },
+    "Webhook Trigger": {
+      "main": [[{ "node": "Prepare Farm Queue", "type": "main", "index": 0 }]]
+    },
     "Hourly Schedule": {
       "main": [[{ "node": "Prepare Farm Queue", "type": "main", "index": 0 }]]
     },
@@ -211,5 +228,5 @@
   },
   "pinData": {},
   "tags": [{ "name": "poultry" }, { "name": "rotemnet" }],
-  "active": false
+  "active": true
 }

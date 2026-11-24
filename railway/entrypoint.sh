@@ -31,6 +31,10 @@ else
   n8n import:workflow --separate --input=/demo-data/workflows || true
 fi
 
+# Ensure the Rotem overview workflow is published so webhooks + schedule run.
+echo "Publishing Poultry RotemNet Daily Overview workflow..."
+n8n publish:workflow --id=R7rzl5TsKVrVR7gg || true
+
 echo "Importing SMTP credential (optional, for local SMTP only)..."
 node /import-smtp-credential.js || true
 
