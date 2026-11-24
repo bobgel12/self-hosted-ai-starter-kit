@@ -9,9 +9,18 @@ const LOGIN_REFERER = `${UI_ORIGIN}/RotemWebApp/User.html`;
 const MAIN_REFERER = `${UI_ORIGIN}/RotemWebApp/Main.html`;
 const USER_AGENT =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+/** Rotem eCheckLoginResultCode.LoginOk — ConnectToGateway uses the same enum. */
+const LOGIN_RESULT_OK = 0;
+const LOGIN_RESULT_FAILED = 1;
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function resultCodeOf(body) {
+  const payload = unwrapResponse(body);
+  const code = payload?.ResultCode ?? body?.ResultCode;
+  return typeof code === 'number' ? code : null;
 }
 
 function parseSetCookie(setCookieHeader) {
@@ -340,8 +349,11 @@ class RotemClient {
     const gatewayOverride = options.gatewayCode || this._gatewayCode || '';
     this._gatewayCode = gatewayOverride;
     // FarmConnectionInfo (ConnectionToken) is often null unless KeepMeSignedIn
-    // is true. Without farmConnectionToken, GetSiteControllersInfo returns empty houses.
-    const maxAttempts = options.maxAttempts ?? 8;
+    // is true — especially for multi-account users who land on My Farm Groups.
+    // Without farmConnectionToken, GetSiteControllersInfo returns empty houses.
+    // Gateway may also be temporarily "disconnected from cloud"; retry with backoff.
+    const maxAttempts = options.maxAttempts ?? 10;
+    let lastError = null;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       const body = await this.post(
@@ -377,59 +389,157 @@ class RotemClient {
         artifacts.gatewayName = gatewayOverride;
       }
 
-      // ConnectionToken is often missing on first Login for some accounts even
-      // with KeepMeSignedIn. ConnectToGateway still works with UserToken +
-      // gateway code and returns a fresh ConnectionToken.
-      if (artifacts.gatewayName) {
-        this.session = artifacts;
+      this.session = artifacts;
+
+      // Multi-account logins omit FarmConnectionInfo. Resolve GatewayCode +
+      // GatewayAliasName from GetUserAccounts (UI "My Farm Groups" path).
+      if (!this.session.gatewayName || !this.session.gatewayAliasName) {
         try {
-          await this.connectToGateway();
+          await this.resolveGatewayFromAccounts(gatewayOverride || this.session.gatewayName);
         } catch (err) {
+          lastError = err;
           if (attempt < maxAttempts) {
-            await sleep(400 * attempt);
+            await sleep(Math.min(30000, 1500 * attempt));
             continue;
           }
           throw err;
         }
-        if (this.session.connectionToken || this.session.gatewayName) {
-          return this.session;
-        }
       }
 
+      if (!this.session.gatewayName) {
+        lastError = new Error(
+          'RotemNet login succeeded but no gateway found. Set rotemGatewayCode in farms.json',
+        );
+        if (attempt < maxAttempts) {
+          await sleep(Math.min(30000, 1500 * attempt));
+          continue;
+        }
+        throw lastError;
+      }
+
+      // ConnectionToken may already be present from Login (single-farm / KeepMeSignedIn).
+      // Still call ConnectToGateway — without it RNBL returns empty/denied payloads.
+      try {
+        await this.connectToGateway();
+      } catch (err) {
+        lastError = err;
+        // If Login already gave a ConnectionToken, keep going — controllers may work.
+        if (this.session.connectionToken) {
+          return this.session;
+        }
+        if (attempt < maxAttempts) {
+          // Gateway "disconnected from cloud" needs longer backoff than auth flapping.
+          const disconnect = err && err.code === 'GATEWAY_DISCONNECTED';
+          await sleep(disconnect ? Math.min(45000, 5000 * attempt) : Math.min(15000, 800 * attempt));
+          continue;
+        }
+        throw err;
+      }
+
+      // farmConnectionToken is required for non-empty FarmHouses.
+      if (this.session.connectionToken) {
+        return this.session;
+      }
+
+      lastError = new Error(
+        'RotemNet ConnectToGateway returned no ConnectionToken',
+      );
       if (attempt < maxAttempts) {
-        await sleep(400 * attempt);
+        await sleep(Math.min(30000, 1500 * attempt));
       }
     }
 
-    throw new Error(
-      'RotemNet login succeeded but farm connection is missing (ConnectionToken/GatewayName). Retry or set rotemGatewayCode in farms.json',
+    throw (
+      lastError ||
+      new Error(
+        'RotemNet login succeeded but farm connection is missing (ConnectionToken/GatewayName). Retry or set rotemGatewayCode in farms.json',
+      )
     );
+  }
+
+  /**
+   * Look up GatewayCode + GatewayAliasName from the account hierarchy when Login
+   * omits FarmConnectionInfo (My Farm Groups accounts such as bobby-angel).
+   */
+  async resolveGatewayFromAccounts(preferredCode = '') {
+    const body = await this.callService('GetUserAccounts', {
+      prmIsOnlyAdminAccounts: false,
+    });
+    const payload = unwrapResponse(body);
+    const accounts = Array.isArray(payload)
+      ? payload
+      : payload && typeof payload === 'object'
+        ? Object.values(payload)
+        : [];
+    const gateways = accounts.flatMap((account) => account?.LstGateways || []);
+    if (!gateways.length) {
+      throw new Error('RotemNet GetUserAccounts returned no gateways');
+    }
+
+    const normalized = String(preferredCode || '').toLowerCase();
+    const match = normalized
+      ? gateways.find(
+          (gw) =>
+            String(gw.GatewayCode || '').toLowerCase() === normalized ||
+            String(gw.GatewayName || '').toLowerCase() === normalized,
+        )
+      : null;
+    const gateway = match || (gateways.length === 1 ? gateways[0] : null);
+    if (!gateway) {
+      throw new Error(
+        `RotemNet could not match gateway ${preferredCode || '(none)'}; set rotemGatewayCode in farms.json`,
+      );
+    }
+
+    this.session.gatewayName = gateway.GatewayCode || gateway.GatewayName || this.session.gatewayName;
+    this.session.gatewayAliasName =
+      gateway.GatewayAliasName || this.session.gatewayAliasName || this.session.gatewayName;
+    return gateway;
   }
 
   /**
    * Required after login on the new Rotem API. Without it, RNBL_GetCommandData
    * returns empty eRNBLResult payloads and all metrics look like zeros.
+   * UI checks ResultCode === LoginOk (0); isSucceed alone is NOT enough —
+   * a disconnected gateway returns isSucceed=true with ResultCode=LoginFailed.
    */
   async connectToGateway() {
     if (!this.session?.gatewayName) return null;
+    const alias =
+      this.session.gatewayAliasName || this.session.gatewayName;
     const body = await this.post(
       this.serviceUrl('Gateways/ConnectToGateway'),
       {
         prmGatewayCode: this.session.gatewayName,
-        prmGatewayAliasName:
-          this.session.gatewayAliasName || this.session.gatewayName,
+        prmGatewayAliasName: alias,
       },
       this.buildAuthHeaders(),
     );
-    if (!responseSucceeded(body)) {
-      throw new Error(
-        `RotemNet ConnectToGateway failed: ${JSON.stringify(body?.ErrorObj ?? body)}`,
+    const payload = unwrapResponse(body);
+    const resultCode = resultCodeOf(body);
+
+    if (!responseSucceeded(body) || (resultCode != null && resultCode !== LOGIN_RESULT_OK)) {
+      const err = new Error(
+        resultCode === LOGIN_RESULT_FAILED
+          ? 'RotemNet ConnectToGateway failed: gateway disconnected from cloud or still connecting — retry shortly'
+          : `RotemNet ConnectToGateway failed: ResultCode=${resultCode} ${JSON.stringify(
+              payload?.ResultMessage ?? body?.ErrorObj ?? payload?.ErrorObj ?? null,
+            )}`,
       );
+      if (resultCode === LOGIN_RESULT_FAILED) err.code = 'GATEWAY_DISCONNECTED';
+      throw err;
     }
+
     const connected = extractLoginArtifacts(body);
-    if (connected.connectionToken) {
-      this.session.connectionToken = connected.connectionToken;
+    if (!connected.connectionToken) {
+      const err = new Error(
+        'RotemNet ConnectToGateway succeeded but ConnectionToken is missing',
+      );
+      err.code = 'MISSING_CONNECTION_TOKEN';
+      throw err;
     }
+
+    this.session.connectionToken = connected.connectionToken;
     if (connected.gatewayName) {
       this.session.gatewayName = connected.gatewayName;
     }
@@ -635,7 +745,7 @@ class RotemClient {
       farm.id;
     if (houses.length === 0) {
       throw new Error(
-        'RotemNet returned no houses — farmConnectionToken/gateway context may be missing; retry or set rotemGatewayCode in farms.json',
+        'RotemNet returned no houses — need farmConnectionToken after ConnectToGateway (gateway may be disconnected from cloud, or set rotemGatewayCode + alias via GetUserAccounts)',
       );
     }
 
