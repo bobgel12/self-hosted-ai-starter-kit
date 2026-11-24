@@ -174,7 +174,9 @@ async function processFarm(farm, globalConfig, thresholds, options = {}) {
         delayMs: 200,
         timeoutMs: 120000,
         houseConcurrency:
-          options.houseConcurrency ?? parseConcurrencyEnv('ROTEM_HOUSE_CONCURRENCY', 2),
+          // Default 4 keeps bobby-angel (8 houses) under the 300s runner
+          // timeout even when N8N_RUNNERS_TASK_TIMEOUT is still unset on Railway.
+          options.houseConcurrency ?? parseConcurrencyEnv('ROTEM_HOUSE_CONCURRENCY', 4),
       },
     );
     report = await client.fetchFarmReport(farm);
