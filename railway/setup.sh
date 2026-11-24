@@ -7,6 +7,11 @@
 # Usage:
 #   ./railway/setup.sh           # link project, deploy, configure
 #   ./railway/setup.sh --deploy  # same (alias)
+#
+# GitHub Actions deploy (on push/merge to main):
+#   1. Railway → project Settings → Tokens → create Project Token (production)
+#   2. GitHub repo → Settings → Secrets → Actions → RAILWAY_TOKEN=<token>
+#   3. Workflow: .github/workflows/deploy-railway.yml
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
