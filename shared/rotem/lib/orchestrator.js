@@ -169,8 +169,10 @@ async function processFarm(farm, globalConfig, thresholds, options = {}) {
         return result.body ?? result;
       },
       {
-        delayMs: 500,
-        timeoutMs: 60000,
+        // Keep delays short: Bobby Angel (8 houses × 3 commands) otherwise exceeds
+        // n8n's default 300s task-runner timeout on Railway.
+        delayMs: 200,
+        timeoutMs: 120000,
         houseConcurrency:
           options.houseConcurrency ?? parseConcurrencyEnv('ROTEM_HOUSE_CONCURRENCY', 2),
       },
