@@ -115,23 +115,198 @@ function parseNumeric(value) {
   return Number.isNaN(num) ? 0 : num;
 }
 
+/** Null for blank, N/A, and Rotem placeholders. Zero stays zero. */
+function optionalNumber(value) {
+  if (value == null) return null;
+  const str = String(value).trim();
+  if (!str || str === 'N/A' || str === '- - -' || str.startsWith('LangKey_')) return null;
+  const num = parseFloat(str.replace(/,/g, ''));
+  return Number.isNaN(num) ? null : num;
+}
+
+/** Rotem history uses -9999 as "no value" on change columns. */
+function historyNumber(value) {
+  const num = optionalNumber(value);
+  if (num == null || num === -9999) return null;
+  return num;
+}
+
+function optionalBool(value) {
+  if (value == null || String(value).trim() === '') return null;
+  const str = String(value).trim().toLowerCase();
+  if (str === 'true' || str === '1') return true;
+  if (str === 'false' || str === '0') return false;
+  return null;
+}
+
+function onOffOrCount(value) {
+  if (value == null || String(value).trim() === '') return null;
+  const str = String(value).trim();
+  if (/^LangKey_Off$/i.test(str) || str.toLowerCase() === 'false') return 'Off';
+  if (/^LangKey_On$/i.test(str) || str.toLowerCase() === 'true') return 'On';
+  const num = optionalNumber(str);
+  if (num == null) return null;
+  if (num === 0) return 'Off';
+  return String(num);
+}
+
+function indexParams(rows) {
+  const map = new Map();
+  for (const row of rows || []) {
+    if (row?.ParameterKeyName) map.set(row.ParameterKeyName, row.ParameterValue);
+  }
+  return map;
+}
+
+function firstView(rows) {
+  return Array.isArray(rows) && rows[0] && typeof rows[0] === 'object' ? rows[0] : {};
+}
+
+function unitFromView(view, key) {
+  const sign = view?.[`${key}_Sign`];
+  if (sign == null || String(sign).trim() === '') return null;
+  return String(sign).trim();
+}
+
+function blankConditions() {
+  return {
+    averageTemperature: null,
+    setTemperature: null,
+    outsideTemperature: null,
+    temperatureUnit: null,
+    insideHumidity: null,
+    co2: null,
+    staticPressure: null,
+    targetPressure: null,
+    pressureUnit: null,
+    ventLevel: null,
+    ventLevelMin: null,
+    ventLevelMax: null,
+    heatersNow: null,
+    birds: null,
+    livability: null,
+    dailyFeed: null,
+    feedUnit: null,
+    averageWeight: null,
+    weightUnit: null,
+    mortality: null,
+    alarm: null,
+    siren: null,
+    controllerAlarms: [],
+  };
+}
+
+/**
+ * Ignore the all-zero controller card Rotem sends when a metric has no reading.
+ * A real zero still counts when CurrentValue / TargetValue is filled in.
+ */
+function meaningfulControllerNumber(block, field) {
+  if (!block) return null;
+  const numeric = block[field];
+  if (numeric == null || numeric === '') return null;
+  const num = Number(numeric);
+  if (Number.isNaN(num)) return null;
+  const display = field === 'CurrentNumericValue' ? block.CurrentValue : block.TargetValue;
+  if (num === 0 && (display == null || display === '')) return null;
+  return num;
+}
+
+function applyControllerSnapshot(conditions, house) {
+  const data = house?.Data || {};
+  const alarms = conditions.controllerAlarms || [];
+  const fill = (section, label, currentKey, targetKey, unitKey) => {
+    const block = data[section];
+    if (!block) return;
+    if (currentKey && conditions[currentKey] == null) {
+      const current = meaningfulControllerNumber(block, 'CurrentNumericValue');
+      if (current != null) conditions[currentKey] = current;
+    }
+    if (targetKey && conditions[targetKey] == null) {
+      const target = meaningfulControllerNumber(block, 'TargetNumericValue');
+      if (target != null) conditions[targetKey] = target;
+    }
+    if (unitKey && conditions[unitKey] == null && block.UnitsStr) {
+      conditions[unitKey] = String(block.UnitsStr);
+    }
+    if (block.IsHighAlarmActive) alarms.push(`${label} high`);
+    if (block.IsLowAlarmActive) alarms.push(`${label} low`);
+  };
+
+  fill('Temperature', 'Temp', 'averageTemperature', 'setTemperature', 'temperatureUnit');
+  fill('Humidity', 'Humidity', 'insideHumidity', null, null);
+  fill('CO2', 'CO2', 'co2', null, null);
+  fill('Pressure', 'Pressure', 'staticPressure', 'targetPressure', 'pressureUnit');
+  fill('VentLevel', 'Vent', 'ventLevel', null, null);
+  fill('DailyFeed', 'Feed', 'dailyFeed', null, 'feedUnit');
+
+  if (!(conditions.averageWeight > 0)) {
+    const weight = meaningfulControllerNumber(data.AvgBirdsWeight, 'CurrentNumericValue');
+    if (weight > 0) {
+      conditions.averageWeight = weight;
+      if (!conditions.weightUnit && data.AvgBirdsWeight?.UnitsStr) {
+        conditions.weightUnit = String(data.AvgBirdsWeight.UnitsStr);
+      }
+    }
+  }
+  if (!(conditions.mortality > 0)) {
+    const mortality = meaningfulControllerNumber(data.Mortality, 'CurrentNumericValue');
+    if (mortality > 0) conditions.mortality = mortality;
+  }
+  if (conditions.livability == null && conditions.birds > 0) {
+    const livability = meaningfulControllerNumber(data.Livability, 'CurrentNumericValue');
+    if (livability != null) conditions.livability = livability;
+  }
+  conditions.controllerAlarms = alarms;
+  return conditions;
+}
+
 function parseLiveHouseData(responseObj) {
-  const general = responseObj?.dsData?.General ?? [];
-  const consumption = responseObj?.dsData?.Consumption ?? [];
+  const ds = responseObj?.dsData ?? {};
+  const general = indexParams(ds.General);
+  const consumption = indexParams(ds.Consumption);
+  const weight = indexParams(ds.AvgWeight);
+  const digital = indexParams(ds.DigitalOut);
+  const generalView = firstView(ds.General_DisplayValues);
+  const consumptionView = firstView(ds.Consumption_View);
+  const weightView = firstView(ds.AvgWeight_View);
 
-  const growthDayRow = general.find((g) => g.ParameterKeyName === 'Growth_Day');
-  const dailyWaterRow = consumption.find((c) => c.ParameterKeyName === 'Daily_Water');
+  const growthDay = optionalNumber(general.get('Growth_Day'));
+  const dailyWater = optionalNumber(consumption.get('Daily_Water'));
+  const alarmRaw = general.get('Alarm');
+  const alarm =
+    alarmRaw == null || String(alarmRaw).trim() === '' ? null : String(alarmRaw).trim();
 
-  const growthDay =
-    growthDayRow?.ParameterValue != null && growthDayRow.ParameterValue !== ''
-      ? Number(growthDayRow.ParameterValue)
-      : null;
-  const dailyWater =
-    dailyWaterRow?.ParameterValue != null && dailyWaterRow.ParameterValue !== ''
-      ? parseNumeric(dailyWaterRow.ParameterValue)
-      : null;
+  const conditions = blankConditions();
+  conditions.averageTemperature = optionalNumber(general.get('Average_Temperature'));
+  conditions.setTemperature = optionalNumber(general.get('Set_Temperature'));
+  conditions.outsideTemperature = optionalNumber(general.get('Outside_Temperature'));
+  conditions.temperatureUnit =
+    unitFromView(generalView, 'Average_Temperature') ||
+    unitFromView(generalView, 'Set_Temperature');
+  conditions.insideHumidity = optionalNumber(general.get('Inside_Humidity'));
+  conditions.co2 = optionalNumber(general.get('CO2'));
+  conditions.staticPressure = optionalNumber(general.get('Static_Pressure'));
+  conditions.targetPressure = optionalNumber(general.get('Target_Pressure'));
+  conditions.pressureUnit =
+    unitFromView(generalView, 'Static_Pressure') || unitFromView(generalView, 'Target_Pressure');
+  conditions.ventLevel = optionalNumber(general.get('Vent_Level'));
+  conditions.ventLevelMin = optionalNumber(general.get('Min_Vent_Level'));
+  conditions.ventLevelMax = optionalNumber(general.get('Max_Vent_Level'));
+  conditions.heatersNow = onOffOrCount(digital.get('Heaters'));
+  conditions.birds = optionalNumber(general.get('Current_Birds_Count_In_House'));
+  conditions.livability = optionalNumber(general.get('Birds_Livability'));
+  conditions.dailyFeed =
+    optionalNumber(consumption.get('Daily_Feed')) ??
+    optionalNumber(general.get('Feed_Consumption'));
+  conditions.feedUnit =
+    unitFromView(consumptionView, 'Daily_Feed') || unitFromView(generalView, 'Feed_Consumption');
+  const averageWeight = optionalNumber(weight.get('Average_Weight'));
+  conditions.averageWeight = averageWeight > 0 ? averageWeight : null;
+  conditions.weightUnit = unitFromView(weightView, 'Average_Weight');
+  conditions.alarm = alarm;
+  conditions.siren = optionalBool(general.get('Siren'));
 
-  return { growthDay, dailyWater };
+  return { growthDay, dailyWater, conditions };
 }
 
 function resolveCurrentGrowthDay(liveGrowthDay, controllerGrowthDay, waterHistory, heaterHistory) {
@@ -162,11 +337,20 @@ function parseWaterHistoryRows(rows) {
       row.TotalDrink ??
       row.TotalWater ??
       0;
+    const lines = [];
+    for (let i = 1; i <= 4; i++) {
+      const lineTotal = historyNumber(row[`HistoryRecord_DailyWater_${i}`]);
+      if (lineTotal != null) lines.push({ line: i, total: lineTotal });
+    }
     parsed.push({
       growthDay: Number(growthDay),
       total: parseNumeric(total),
-      changeTotal: row.HistoryRecord_ChangeTotal ?? null,
-      waterPerBird: row.HistoryRecord_WaterPerBird ?? null,
+      changeTotal: historyNumber(row.HistoryRecord_ChangeTotal),
+      waterPerBird: historyNumber(row.HistoryRecord_WaterPerBird),
+      lines,
+      cooling: historyNumber(row.HistoryRecord_Cooling),
+      fogger: historyNumber(row.HistoryRecord_Fogger),
+      flushing: historyNumber(row.Flushing),
     });
   }
   return parsed.sort((a, b) => a.growthDay - b.growthDay);
@@ -178,20 +362,18 @@ function parseHeaterHistoryRows(rows) {
     const growthDay = row.HistoryRecord_Heaters_GrowthDay ?? row.HistoryRecord_GrowthDay;
     if (growthDay == null || growthDay < 0) continue;
 
+    const devices = [];
+    for (let i = 1; i <= 16; i++) {
+      const mins = parseDurationToMinutes(row[`HistoryRecord_Heaters_HeaterDevice_${i}`]);
+      if (mins > 0) devices.push({ device: i, minutes: Math.round(mins) });
+    }
+
     let totalMinutes =
       parseDurationToMinutes(row.HistoryRecord_Heaters_TotalRuntime) ||
       parseDurationToMinutes(row.HistoryRecord_Heaters_Total);
-
-    const devices = [];
+    // Real heater history has per-device times and no total column.
     if (!totalMinutes) {
-      for (let i = 1; i <= 16; i++) {
-        const key = `HistoryRecord_Heaters_HeaterDevice_${i}`;
-        const mins = parseDurationToMinutes(row[key]);
-        if (mins > 0) {
-          devices.push({ device: i, minutes: mins });
-          totalMinutes += mins;
-        }
-      }
+      totalMinutes = devices.reduce((sum, device) => sum + device.minutes, 0);
     }
 
     parsed.push({
@@ -216,10 +398,20 @@ function lastNGrowthDays(history, currentGrowthDay, count, valueField = 'total')
   for (let offset = count - 1; offset >= 0; offset--) {
     const growthDay = currentGrowthDay - offset;
     const row = valueForGrowthDay(history, growthDay);
-    rows.push({
+    const entry = {
       growthDay,
       total: valueField === 'totalMinutes' ? (row?.totalMinutes ?? null) : (row?.total ?? null),
-    });
+    };
+    if (valueField === 'totalMinutes') {
+      entry.devices = row?.devices ?? [];
+    } else {
+      entry.waterPerBird = row?.waterPerBird ?? null;
+      entry.lines = row?.lines ?? [];
+      entry.cooling = row?.cooling ?? null;
+      entry.fogger = row?.fogger ?? null;
+      entry.flushing = row?.flushing ?? null;
+    }
+    rows.push(entry);
   }
   return rows;
 }
@@ -240,14 +432,20 @@ function commandDataReady(body) {
   );
 }
 
-function emptyHouseReport(house, errorMessage) {
+function emptyHouseReport(house, errorMessage, liveData) {
   const houseNumber = house.HouseNumber;
+  const seeded = {
+    ...blankConditions(),
+    ...(liveData?.conditions || {}),
+    controllerAlarms: [...(liveData?.conditions?.controllerAlarms || [])],
+  };
   return {
     houseNumber,
     houseName: house.HouseName ?? `House ${houseNumber}`,
-    growthDay: house.GrowthDay ?? null,
+    growthDay: liveData?.growthDay ?? house.GrowthDay ?? null,
     connectionStatus: house.ConnectionStatus ?? 0,
     fetchError: errorMessage,
+    conditions: applyControllerSnapshot(seeded, house),
     water: {
       todayTotal: null,
       yesterdayTotal: null,
@@ -262,6 +460,7 @@ function emptyHouseReport(house, errorMessage) {
       last2Days: [],
       last2DaysTotalMinutes: null,
       devices: [],
+      yesterdayDevices: [],
       historyRows: [],
     },
   };
@@ -624,7 +823,7 @@ class RotemClient {
 
     let waterHistory = [];
     let heaterHistory = [];
-    let liveData = { growthDay: null, dailyWater: null };
+    let liveData = { growthDay: null, dailyWater: null, conditions: blankConditions() };
 
     if (connectionStatus === 1) {
       const liveBody = await this.getCommandData(houseNumber, '0');
@@ -646,6 +845,7 @@ class RotemClient {
         return emptyHouseReport(
           house,
           'RotemNet returned no history after retries',
+          liveData,
         );
       }
 
@@ -676,12 +876,21 @@ class RotemClient {
     const waterLast3Days = lastNGrowthDays(waterHistory, currentGrowthDay, 3, 'total');
     const heaterLast2Days = lastNGrowthDays(heaterHistory, currentGrowthDay, 2, 'totalMinutes');
     const heaterLast2DaysTotal = sumLastNDays(heaterLast2Days);
+    const conditions = applyControllerSnapshot(
+      {
+        ...blankConditions(),
+        ...(liveData.conditions || {}),
+        controllerAlarms: [...(liveData.conditions?.controllerAlarms || [])],
+      },
+      house,
+    );
 
     return {
       houseNumber,
       houseName,
       growthDay: currentGrowthDay,
       connectionStatus,
+      conditions,
       liveDailyWater:
         liveData.dailyWater ??
         house.Data?.DailyWater?.CurrentNumericValue ??
@@ -707,6 +916,7 @@ class RotemClient {
         last2Days: heaterLast2Days,
         last2DaysTotalMinutes: heaterLast2DaysTotal,
         devices: todayHeater?.devices ?? [],
+        yesterdayDevices: yesterdayHeater?.devices ?? [],
         historyRows: heaterHistory,
       },
     };
@@ -779,6 +989,7 @@ module.exports = {
   parseWaterHistoryRows,
   parseHeaterHistoryRows,
   parseLiveHouseData,
+  applyControllerSnapshot,
   parseDurationToMinutes,
   parseNumeric,
   pctChange,
