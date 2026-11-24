@@ -64,124 +64,29 @@ function fmtHumidity(conditions) {
 
 function fmtPressure(conditions, html) {
   const c = conditions || {};
-  if (c.staticPressure == null && c.targetPressure == null) return '—';
-  const current = c.staticPressure == null ? '—' : fmtMeasure(c.staticPressure);
-  const target = c.targetPressure == null ? '—' : fmtMeasure(c.targetPressure);
-  return withUnit(`${current} / ${target}`, c.pressureUnit, html);
+  if (c.staticPressure == null) return '—';
+  return withUnit(fmtMeasure(c.staticPressure), c.pressureUnit, html);
 }
 
-function fmtVent(conditions, html) {
-  const c = conditions || {};
-  if (c.ventLevel == null) return '—';
-  const level = fmtMeasure(c.ventLevel);
-  if (c.ventLevelMin == null || c.ventLevelMax == null) return level;
-  const range = `${fmtMeasure(c.ventLevelMin)}–${fmtMeasure(c.ventLevelMax)}`;
-  return html
-    ? `${level} <span style="color:#6b7280">(${range})</span>`
-    : `${level} (${range})`;
+function fmtVent(conditions) {
+  if (conditions?.ventLevel == null) return '—';
+  return fmtMeasure(conditions.ventLevel);
 }
 
-function fmtBirds(conditions) {
-  const c = conditions || {};
-  if (c.birds == null) return '—';
-  if (c.birds > 0 && c.livability != null) return `${fmtNum(c.birds)} · ${fmtMeasure(c.livability)}%`;
-  return fmtNum(c.birds);
-}
-
-function fmtFeed(conditions, html) {
-  const c = conditions || {};
-  if (c.dailyFeed == null) return '—';
-  return withUnit(fmtMeasure(c.dailyFeed), c.feedUnit, html);
-}
-
-function fmtWeight(conditions, html) {
-  const c = conditions || {};
-  if (!(c.averageWeight > 0)) return '—';
-  return withUnit(fmtMeasure(c.averageWeight), c.weightUnit, html);
-}
-
-function houseAlarmText(house) {
-  const c = house?.conditions || {};
-  const parts = [];
-  if (c.siren) parts.push('Siren');
-  if (c.alarm) parts.push(String(c.alarm));
-  for (const alarm of c.controllerAlarms || []) parts.push(String(alarm));
-  return parts;
-}
-
-function conditionsColumns(houses) {
-  const cols = [
-    { key: 'temp', label: 'Temp avg / set / out' },
-    { key: 'humidity', label: 'Humidity' },
-    { key: 'pressure', label: 'Pressure now / target' },
-    { key: 'vent', label: 'Vent level' },
-    { key: 'heatersNow', label: 'Heaters now' },
-    { key: 'birds', label: 'Birds' },
-    { key: 'feed', label: 'Feed today' },
-  ];
-  if ((houses || []).some((h) => h.conditions?.co2 != null)) cols.push({ key: 'co2', label: 'CO2' });
-  if ((houses || []).some((h) => h.conditions?.averageWeight > 0)) {
-    cols.push({ key: 'weight', label: 'Avg weight' });
-  }
-  if ((houses || []).some((h) => h.conditions?.mortality > 0)) {
-    cols.push({ key: 'mortality', label: 'Mortality' });
-  }
-  if ((houses || []).some((h) => houseAlarmText(h).length)) cols.push({ key: 'alarms', label: 'Alarms' });
-  return cols;
-}
+const LIVE_COLUMNS = [
+  { key: 'temp', label: 'Temp avg / set / out' },
+  { key: 'humidity', label: 'Humidity' },
+  { key: 'pressure', label: 'Static pressure' },
+  { key: 'vent', label: 'Vent level' },
+];
 
 function conditionsCell(house, key, html) {
   const c = house.conditions || {};
   if (key === 'temp') return fmtTempTrio(c, html);
   if (key === 'humidity') return fmtHumidity(c);
   if (key === 'pressure') return fmtPressure(c, html);
-  if (key === 'vent') return fmtVent(c, html);
-  if (key === 'heatersNow') {
-    if (!c.heatersNow) return '—';
-    return html ? escapeHtml(c.heatersNow) : c.heatersNow;
-  }
-  if (key === 'birds') return fmtBirds(c);
-  if (key === 'feed') return fmtFeed(c, html);
-  if (key === 'co2') return c.co2 == null ? '—' : fmtMeasure(c.co2);
-  if (key === 'weight') return fmtWeight(c, html);
-  if (key === 'mortality') return c.mortality == null ? '—' : fmtNum(c.mortality);
-  if (key === 'alarms') {
-    const text = houseAlarmText(house).join(', ');
-    if (!text) return '—';
-    return html ? escapeHtml(text) : text;
-  }
+  if (key === 'vent') return fmtVent(c);
   return '—';
-}
-
-function todayHistoryDay(days) {
-  if (!Array.isArray(days) || !days.length) return null;
-  return days[days.length - 1];
-}
-
-function fmtWaterLines(day) {
-  if (!day) return '—';
-  const parts = [];
-  for (const line of day.lines || []) {
-    if (line.total > 0) parts.push(`${line.line}: ${fmtNum(line.total)}`);
-  }
-  if (day.cooling > 0) parts.push(`cool ${fmtNum(day.cooling)}`);
-  if (day.fogger > 0) parts.push(`fog ${fmtNum(day.fogger)}`);
-  if (day.flushing > 0) parts.push(`flush ${fmtNum(day.flushing)}`);
-  return parts.length ? parts.join(' · ') : '—';
-}
-
-function fmtDevices(devices) {
-  if (!devices?.length) return '—';
-  return devices.map((d) => `H${d.device} ${fmtMinutes(d.minutes)}`).join(', ');
-}
-
-function waterTotalCell(day, html) {
-  const total = fmtNum(day?.total);
-  if (!(day?.waterPerBird > 0)) return total;
-  const perBird = `${fmtNum(day.waterPerBird)} / bird`;
-  return html
-    ? `${total}<div style="color:#6b7280;font-size:11px">${perBird}</div>`
-    : `${total} (${perBird})`;
 }
 
 function waterDayHeaders(houses) {
@@ -263,10 +168,7 @@ function buildEmail(report, recipientEmail, reportPeriod) {
     .map((h) => {
       const days = h.water?.last3Days ?? [];
       const cells = days.length
-        ? days.map(
-            (d) =>
-              `<td style="padding:8px;border:1px solid #e5e7eb;text-align:right">${waterTotalCell(d, true)}</td>`,
-          )
+        ? days.map((d) => `<td style="padding:8px;border:1px solid #e5e7eb;text-align:right">${fmtNum(d.total)}</td>`)
         : wHeaders.map(() => '<td style="padding:8px;border:1px solid #e5e7eb;text-align:right">—</td>');
       const status =
         h.connectionStatus === 1
@@ -277,7 +179,6 @@ function buildEmail(report, recipientEmail, reportPeriod) {
         <td style="padding:8px;border:1px solid #e5e7eb;text-align:center">${fmtNum(h.growthDay)}</td>
         <td style="padding:8px;border:1px solid #e5e7eb;text-align:center">${status}</td>
         ${cells.join('')}
-        <td style="padding:8px;border:1px solid #e5e7eb">${fmtWaterLines(todayHistoryDay(days))}</td>
       </tr>`;
     })
     .join('');
@@ -301,11 +202,6 @@ function buildEmail(report, recipientEmail, reportPeriod) {
         <td style="padding:8px;border:1px solid #e5e7eb;text-align:center">${status}</td>
         ${cells.join('')}
         <td style="padding:8px;border:1px solid #e5e7eb;text-align:right;font-weight:600">${fmtMinutes(h.heaters?.last2DaysTotalMinutes)}</td>
-        <td style="padding:8px;border:1px solid #e5e7eb">${fmtDevices(h.heaters?.devices)}${
-          h.heaters?.yesterdayDevices?.length
-            ? `<div style="color:#6b7280;font-size:11px">yday ${fmtDevices(h.heaters.yesterdayDevices)}</div>`
-            : ''
-        }</td>
       </tr>`;
     })
     .join('');
@@ -330,10 +226,9 @@ function buildEmail(report, recipientEmail, reportPeriod) {
     })
     .join('');
 
-  const liveColumns = conditionsColumns(report.houses);
   const liveRows = (report.houses || [])
     .map((h) => {
-      const cells = liveColumns
+      const cells = LIVE_COLUMNS
         .map(
           (col) =>
             `<td style="padding:8px;border:1px solid #e5e7eb;text-align:center">${conditionsCell(h, col.key, true)}</td>`,
@@ -364,7 +259,7 @@ function buildEmail(report, recipientEmail, reportPeriod) {
   const html = `<!DOCTYPE html>
 <html>
 <head><meta charset="utf-8"></head>
-<body style="font-family:Arial,sans-serif;color:#111827;max-width:1100px;margin:0 auto;padding:20px">
+<body style="font-family:Arial,sans-serif;color:#111827;max-width:960px;margin:0 auto;padding:20px">
   <h1 style="margin-bottom:4px">${farmName} — ${periodLabel} Overview</h1>
   <p style="color:#6b7280;margin-top:0">${dateStr} · ${connected}/${total} houses online · Growth days ${minDay}–${maxDay}</p>
   ${baselineNote}
@@ -372,19 +267,19 @@ function buildEmail(report, recipientEmail, reportPeriod) {
   ${alertsHtml}
 
   <h2 style="margin-top:28px">Live conditions</h2>
-  <p style="color:#6b7280;font-size:13px;margin-top:0">Current controller readings (command 0). Feed is today's total so far. CO2, weight, mortality, and alarms show up only when Rotem reports them.</p>
+  <p style="color:#6b7280;font-size:13px;margin-top:0">Current controller readings. Temperature is average / set point / outside.</p>
   <table style="border-collapse:collapse;width:100%;font-size:13px;margin-top:8px">
     <thead>
       <tr style="background:#f0fdf4">
         <th style="padding:8px;border:1px solid #e5e7eb;text-align:left">House</th>
-        ${liveColumns.map((col) => `<th style="padding:8px;border:1px solid #e5e7eb">${col.label}</th>`).join('')}
+        ${LIVE_COLUMNS.map((col) => `<th style="padding:8px;border:1px solid #e5e7eb">${col.label}</th>`).join('')}
       </tr>
     </thead>
     <tbody>${liveRows}</tbody>
   </table>
 
   <h2 style="margin-top:28px">Water — Last 3 Flock Days</h2>
-  <p style="color:#6b7280;font-size:13px;margin-top:0">Daily water total per house. Per bird is under the total when Rotem sends it above 0. Lines today are drink lines above 0, plus cool pad, fogger, or flush when above 0.</p>
+  <p style="color:#6b7280;font-size:13px;margin-top:0">Daily water total per house (Rotem history, by flock day).</p>
   <table style="border-collapse:collapse;width:100%;font-size:14px;margin-top:8px">
     <thead>
       <tr style="background:#eff6ff">
@@ -392,14 +287,13 @@ function buildEmail(report, recipientEmail, reportPeriod) {
         <th style="padding:8px;border:1px solid #e5e7eb">Current day</th>
         <th style="padding:8px;border:1px solid #e5e7eb">Status</th>
         ${wHeaders.map((h) => `<th style="padding:8px;border:1px solid #e5e7eb">${h}</th>`).join('')}
-        <th style="padding:8px;border:1px solid #e5e7eb">Lines today</th>
       </tr>
     </thead>
     <tbody>${waterDetailRows}</tbody>
   </table>
 
   <h2 style="margin-top:28px">Heater Runtime — Last 2 Flock Days</h2>
-  <p style="color:#6b7280;font-size:13px;margin-top:0">Per-day heater runtime, 2-day total, and which heaters ran (devices above 0).</p>
+  <p style="color:#6b7280;font-size:13px;margin-top:0">Per-day heater runtime and 2-day total per house.</p>
   <table style="border-collapse:collapse;width:100%;font-size:14px;margin-top:8px">
     <thead>
       <tr style="background:#fff7ed">
@@ -408,7 +302,6 @@ function buildEmail(report, recipientEmail, reportPeriod) {
         <th style="padding:8px;border:1px solid #e5e7eb">Status</th>
         ${hHeaders.map((h) => `<th style="padding:8px;border:1px solid #e5e7eb">${h}</th>`).join('')}
         <th style="padding:8px;border:1px solid #e5e7eb">2-day total</th>
-        <th style="padding:8px;border:1px solid #e5e7eb">On today</th>
       </tr>
     </thead>
     <tbody>${heaterDetailRows}</tbody>
@@ -456,18 +349,16 @@ function buildEmail(report, recipientEmail, reportPeriod) {
 
   textLines.push('', 'Live conditions:');
   for (const h of report.houses || []) {
-    const bits = liveColumns.map((col) => `${col.label}: ${conditionsCell(h, col.key, false)}`);
+    const bits = LIVE_COLUMNS.map((col) => `${col.label}: ${conditionsCell(h, col.key, false)}`);
     textLines.push(`  ${h.houseName}: ${bits.join(' | ')}`);
   }
 
   textLines.push('', 'Water — Last 3 flock days:');
   for (const h of report.houses || []) {
     const days = (h.water?.last3Days ?? [])
-      .map((d) => `day ${d.growthDay}: ${waterTotalCell(d, false)}`)
+      .map((d) => `day ${d.growthDay}: ${fmtNum(d.total)}`)
       .join(', ');
-    textLines.push(
-      `  ${h.houseName}: ${days || '—'} | lines today ${fmtWaterLines(todayHistoryDay(h.water?.last3Days))}`,
-    );
+    textLines.push(`  ${h.houseName}: ${days || '—'}`);
   }
 
   textLines.push('', 'Heater — Last 2 flock days (total):');
@@ -475,12 +366,8 @@ function buildEmail(report, recipientEmail, reportPeriod) {
     const days = (h.heaters?.last2Days ?? [])
       .map((d) => `day ${d.growthDay}: ${fmtMinutes(d.total)}`)
       .join(', ');
-    const yday =
-      h.heaters?.yesterdayDevices?.length
-        ? ` | yday devices ${fmtDevices(h.heaters.yesterdayDevices)}`
-        : '';
     textLines.push(
-      `  ${h.houseName}: ${days || '—'} | 2-day total: ${fmtMinutes(h.heaters?.last2DaysTotalMinutes)} | on today ${fmtDevices(h.heaters?.devices)}${yday}`,
+      `  ${h.houseName}: ${days || '—'} | 2-day total: ${fmtMinutes(h.heaters?.last2DaysTotalMinutes)}`,
     );
   }
 

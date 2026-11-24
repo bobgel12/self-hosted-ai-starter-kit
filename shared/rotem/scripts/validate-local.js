@@ -43,23 +43,9 @@ const mockReport = {
         outsideTemperature: 27.3,
         temperatureUnit: 'C°',
         insideHumidity: 64,
-        co2: 850,
         staticPressure: 24,
-        targetPressure: 24.9,
         pressureUnit: 'Pa',
         ventLevel: 17,
-        ventLevelMin: 6,
-        ventLevelMax: 25,
-        heatersNow: 'Off',
-        birds: 20000,
-        livability: 99,
-        dailyFeed: 37,
-        feedUnit: 'KG',
-        averageWeight: null,
-        mortality: null,
-        alarm: null,
-        siren: false,
-        controllerAlarms: [],
       },
       water: {
         todayTotal: 1500,
@@ -67,20 +53,9 @@ const mockReport = {
         pctChange: 25,
         rotemPctChange: 25,
         last3Days: [
-          { growthDay: 19, total: 1100, waterPerBird: 0 },
-          { growthDay: 20, total: 1200, waterPerBird: 0.08, lines: [] },
-          {
-            growthDay: 21,
-            total: 1500,
-            waterPerBird: 0,
-            lines: [
-              { line: 1, total: 400 },
-              { line: 2, total: 350 },
-              { line: 3, total: 0 },
-            ],
-            cooling: 0,
-            fogger: 12,
-          },
+          { growthDay: 19, total: 1100 },
+          { growthDay: 20, total: 1200 },
+          { growthDay: 21, total: 1500 },
         ],
         historyRows: [],
       },
@@ -93,8 +68,7 @@ const mockReport = {
           { growthDay: 21, total: 500 },
         ],
         last2DaysTotalMinutes: 900,
-        devices: [{ device: 1, minutes: 120 }],
-        yesterdayDevices: [{ device: 1, minutes: 90 }, { device: 4, minutes: 30 }],
+        devices: [],
         historyRows: [],
       },
     },
@@ -148,100 +122,73 @@ function assertParsers() {
   if (live.growthDay !== 21 || live.dailyWater !== 989) {
     throw new Error(`live totals parsed wrong: ${JSON.stringify(live)}`);
   }
+  const kept = ['averageTemperature', 'setTemperature', 'outsideTemperature', 'temperatureUnit', 'insideHumidity', 'staticPressure', 'pressureUnit', 'ventLevel'];
+  const extra = Object.keys(live.conditions).filter((key) => !kept.includes(key));
+  if (extra.length) {
+    throw new Error(`live conditions has extra fields: ${extra.join(', ')}`);
+  }
   if (live.conditions.averageTemperature !== 29.71 || live.conditions.temperatureUnit !== 'C°') {
     throw new Error('temperature not parsed from command 0');
   }
-  if (live.conditions.co2 != null || live.conditions.heatersNow !== 'Off') {
-    throw new Error(`unexpected live conditions ${JSON.stringify(live.conditions)}`);
+  if (live.conditions.insideHumidity !== 64 || live.conditions.staticPressure !== 24 || live.conditions.pressureUnit !== 'Pa') {
+    throw new Error(`humidity or pressure parsed wrong: ${JSON.stringify(live.conditions)}`);
   }
-  if (live.conditions.birds !== 0 || live.conditions.dailyFeed !== 37 || live.conditions.feedUnit !== 'KG') {
-    throw new Error('birds or feed not parsed');
-  }
-  if (live.conditions.averageWeight != null) {
-    throw new Error('zero average weight should stay off the report');
+  if (live.conditions.ventLevel !== 17) {
+    throw new Error('vent level not parsed');
   }
 
   const water = parseWaterHistoryRows([
     {
       HistoryRecord_GrowthDay: 21,
       HistoryRecord_TotalDrink: '998.4',
-      HistoryRecord_ChangeTotal: -9999,
+      HistoryRecord_ChangeTotal: 3,
       HistoryRecord_WaterPerBird: '0.12',
-      HistoryRecord_DailyWater_1: '516.7',
-      HistoryRecord_DailyWater_2: '0',
-      HistoryRecord_DailyWater_3: -9999,
-      HistoryRecord_Cooling: '4',
-      HistoryRecord_Fogger: '0',
-      Flushing: '',
     },
   ]);
-  if (water[0].changeTotal != null || water[0].waterPerBird !== 0.12) {
-    throw new Error(`water extras parsed wrong: ${JSON.stringify(water[0])}`);
-  }
-  if (water[0].lines.length !== 2 || water[0].cooling !== 4 || water[0].fogger !== 0) {
-    throw new Error(`water lines parsed wrong: ${JSON.stringify(water[0])}`);
+  if (water[0].total !== 998.4 || water[0].lines || water[0].cooling != null) {
+    throw new Error(`water row should stay totals only: ${JSON.stringify(water[0])}`);
   }
 
   const heaters = parseHeaterHistoryRows([
-    {
-      HistoryRecord_Heaters_GrowthDay: 21,
-      HistoryRecord_Heaters_HeaterDevice_1: '00:00',
-      HistoryRecord_Heaters_HeaterDevice_3: '03:43',
-      HistoryRecord_Heaters_TotalRuntime: '04:00',
-    },
     {
       HistoryRecord_Heaters_GrowthDay: 20,
       HistoryRecord_Heaters_HeaterDevice_4: '02:31',
     },
   ]);
-  if (heaters[1].totalMinutes !== 240 || heaters[1].devices.length !== 1) {
-    throw new Error(`heater total should win over devices: ${JSON.stringify(heaters[1])}`);
-  }
-  if (heaters[0].totalMinutes !== 151 || heaters[0].devices[0].device !== 4) {
+  if (heaters[0].totalMinutes !== 151) {
     throw new Error(`heater devices should sum when no total: ${JSON.stringify(heaters[0])}`);
   }
 
   const fromController = applyControllerSnapshot(
     {
       averageTemperature: null,
-      setTemperature: null,
+      setTemperature: 27.7,
       temperatureUnit: null,
       insideHumidity: 64,
-      co2: null,
       staticPressure: null,
-      targetPressure: null,
       pressureUnit: null,
       ventLevel: null,
-      birds: 0,
-      livability: null,
-      dailyFeed: null,
-      feedUnit: null,
-      averageWeight: null,
-      weightUnit: null,
-      mortality: null,
-      controllerAlarms: [],
     },
     {
       Data: {
         Temperature: {
           CurrentNumericValue: 0,
           CurrentValue: null,
-          TargetNumericValue: 0,
-          TargetValue: null,
-          IsLowAlarmActive: true,
-          IsHighAlarmActive: false,
+          TargetNumericValue: 80,
+          TargetValue: '80',
         },
-        Humidity: {
-          CurrentNumericValue: 70,
-          CurrentValue: null,
-          IsLowAlarmActive: false,
-          IsHighAlarmActive: false,
+        Pressure: {
+          CurrentNumericValue: 0.12,
+          CurrentValue: '0.12',
+          UnitsStr: 'inWC',
+        },
+        VentLevel: {
+          CurrentNumericValue: 8,
+          CurrentValue: '8',
         },
         Mortality: {
           CurrentNumericValue: 3,
           CurrentValue: '3',
-          IsLowAlarmActive: false,
-          IsHighAlarmActive: false,
         },
       },
     },
@@ -249,8 +196,14 @@ function assertParsers() {
   if (fromController.averageTemperature != null || fromController.insideHumidity !== 64) {
     throw new Error('controller snapshot overwrote command 0 or invented a zero temp');
   }
-  if (fromController.mortality !== 3 || !fromController.controllerAlarms.includes('Temp low')) {
-    throw new Error(`controller fallback missed mortality/alarm: ${JSON.stringify(fromController)}`);
+  if (fromController.setTemperature !== 27.7) {
+    throw new Error('controller target should not replace a command 0 set point');
+  }
+  if (fromController.staticPressure !== 0.12 || fromController.pressureUnit !== 'inWC' || fromController.ventLevel !== 8) {
+    throw new Error(`controller fallback missed pressure/vent: ${JSON.stringify(fromController)}`);
+  }
+  if ('mortality' in fromController) {
+    throw new Error('controller fallback should not add mortality');
   }
 }
 
@@ -319,31 +272,41 @@ async function main() {
     const text = second.email.text;
     for (const needle of [
       'Live conditions',
+      'Temp avg / set / out',
       '29.7 / 27.7 / 27.3 C°',
+      'Humidity',
       '64%',
-      '24 / 24.9 Pa',
-      'Heaters now',
-      '20,000 · 99%',
-      '37 KG',
-      '>CO2<',
-      '0.08 / bird',
-      '1: 400 · 2: 350 · fog 12',
-      'Lines today',
-      'H1 2h 0m',
-      'yday H1 1h 30m, H4 30m',
-      'On today',
+      'Static pressure',
+      '>24 Pa<',
+      'Vent level',
+      '>17<',
       'disconnected',
     ]) {
       assertIncludes(html, needle, 'html');
     }
-    if (html.includes('>Mortality<') || html.includes('>Avg weight<')) {
-      throw new Error('empty mortality/weight columns should stay hidden');
+    for (const banned of [
+      'Heaters now',
+      'Birds',
+      'Feed today',
+      'CO2',
+      'Avg weight',
+      'Mortality',
+      'Alarms',
+      'Lines today',
+      '/ bird',
+      'On today',
+      'yday H',
+    ]) {
+      if (html.includes(banned)) {
+        throw new Error(`html still includes removed field ${JSON.stringify(banned)}`);
+      }
     }
     for (const needle of [
       'Temp avg / set / out: 29.7 / 27.7 / 27.3 C°',
-      'lines today 1: 400 · 2: 350 · fog 12',
-      'on today H1 2h 0m',
-      'day 20: 1,200 (0.08 / bird)',
+      'Humidity: 64%',
+      'Static pressure: 24 Pa',
+      'Vent level: 17',
+      'day 20: 1,200',
     ]) {
       assertIncludes(text, needle, 'text');
     }

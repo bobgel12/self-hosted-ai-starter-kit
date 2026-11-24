@@ -124,32 +124,6 @@ function optionalNumber(value) {
   return Number.isNaN(num) ? null : num;
 }
 
-/** Rotem history uses -9999 as "no value" on change columns. */
-function historyNumber(value) {
-  const num = optionalNumber(value);
-  if (num == null || num === -9999) return null;
-  return num;
-}
-
-function optionalBool(value) {
-  if (value == null || String(value).trim() === '') return null;
-  const str = String(value).trim().toLowerCase();
-  if (str === 'true' || str === '1') return true;
-  if (str === 'false' || str === '0') return false;
-  return null;
-}
-
-function onOffOrCount(value) {
-  if (value == null || String(value).trim() === '') return null;
-  const str = String(value).trim();
-  if (/^LangKey_Off$/i.test(str) || str.toLowerCase() === 'false') return 'Off';
-  if (/^LangKey_On$/i.test(str) || str.toLowerCase() === 'true') return 'On';
-  const num = optionalNumber(str);
-  if (num == null) return null;
-  if (num === 0) return 'Off';
-  return String(num);
-}
-
 function indexParams(rows) {
   const map = new Map();
   for (const row of rows || []) {
@@ -175,24 +149,9 @@ function blankConditions() {
     outsideTemperature: null,
     temperatureUnit: null,
     insideHumidity: null,
-    co2: null,
     staticPressure: null,
-    targetPressure: null,
     pressureUnit: null,
     ventLevel: null,
-    ventLevelMin: null,
-    ventLevelMax: null,
-    heatersNow: null,
-    birds: null,
-    livability: null,
-    dailyFeed: null,
-    feedUnit: null,
-    averageWeight: null,
-    weightUnit: null,
-    mortality: null,
-    alarm: null,
-    siren: null,
-    controllerAlarms: [],
   };
 }
 
@@ -213,8 +172,7 @@ function meaningfulControllerNumber(block, field) {
 
 function applyControllerSnapshot(conditions, house) {
   const data = house?.Data || {};
-  const alarms = conditions.controllerAlarms || [];
-  const fill = (section, label, currentKey, targetKey, unitKey) => {
+  const fill = (section, currentKey, targetKey, unitKey) => {
     const block = data[section];
     if (!block) return;
     if (currentKey && conditions[currentKey] == null) {
@@ -228,35 +186,12 @@ function applyControllerSnapshot(conditions, house) {
     if (unitKey && conditions[unitKey] == null && block.UnitsStr) {
       conditions[unitKey] = String(block.UnitsStr);
     }
-    if (block.IsHighAlarmActive) alarms.push(`${label} high`);
-    if (block.IsLowAlarmActive) alarms.push(`${label} low`);
   };
 
-  fill('Temperature', 'Temp', 'averageTemperature', 'setTemperature', 'temperatureUnit');
-  fill('Humidity', 'Humidity', 'insideHumidity', null, null);
-  fill('CO2', 'CO2', 'co2', null, null);
-  fill('Pressure', 'Pressure', 'staticPressure', 'targetPressure', 'pressureUnit');
-  fill('VentLevel', 'Vent', 'ventLevel', null, null);
-  fill('DailyFeed', 'Feed', 'dailyFeed', null, 'feedUnit');
-
-  if (!(conditions.averageWeight > 0)) {
-    const weight = meaningfulControllerNumber(data.AvgBirdsWeight, 'CurrentNumericValue');
-    if (weight > 0) {
-      conditions.averageWeight = weight;
-      if (!conditions.weightUnit && data.AvgBirdsWeight?.UnitsStr) {
-        conditions.weightUnit = String(data.AvgBirdsWeight.UnitsStr);
-      }
-    }
-  }
-  if (!(conditions.mortality > 0)) {
-    const mortality = meaningfulControllerNumber(data.Mortality, 'CurrentNumericValue');
-    if (mortality > 0) conditions.mortality = mortality;
-  }
-  if (conditions.livability == null && conditions.birds > 0) {
-    const livability = meaningfulControllerNumber(data.Livability, 'CurrentNumericValue');
-    if (livability != null) conditions.livability = livability;
-  }
-  conditions.controllerAlarms = alarms;
+  fill('Temperature', 'averageTemperature', 'setTemperature', 'temperatureUnit');
+  fill('Humidity', 'insideHumidity', null, null);
+  fill('Pressure', 'staticPressure', null, 'pressureUnit');
+  fill('VentLevel', 'ventLevel', null, null);
   return conditions;
 }
 
@@ -264,17 +199,10 @@ function parseLiveHouseData(responseObj) {
   const ds = responseObj?.dsData ?? {};
   const general = indexParams(ds.General);
   const consumption = indexParams(ds.Consumption);
-  const weight = indexParams(ds.AvgWeight);
-  const digital = indexParams(ds.DigitalOut);
   const generalView = firstView(ds.General_DisplayValues);
-  const consumptionView = firstView(ds.Consumption_View);
-  const weightView = firstView(ds.AvgWeight_View);
 
   const growthDay = optionalNumber(general.get('Growth_Day'));
   const dailyWater = optionalNumber(consumption.get('Daily_Water'));
-  const alarmRaw = general.get('Alarm');
-  const alarm =
-    alarmRaw == null || String(alarmRaw).trim() === '' ? null : String(alarmRaw).trim();
 
   const conditions = blankConditions();
   conditions.averageTemperature = optionalNumber(general.get('Average_Temperature'));
@@ -284,27 +212,9 @@ function parseLiveHouseData(responseObj) {
     unitFromView(generalView, 'Average_Temperature') ||
     unitFromView(generalView, 'Set_Temperature');
   conditions.insideHumidity = optionalNumber(general.get('Inside_Humidity'));
-  conditions.co2 = optionalNumber(general.get('CO2'));
   conditions.staticPressure = optionalNumber(general.get('Static_Pressure'));
-  conditions.targetPressure = optionalNumber(general.get('Target_Pressure'));
-  conditions.pressureUnit =
-    unitFromView(generalView, 'Static_Pressure') || unitFromView(generalView, 'Target_Pressure');
+  conditions.pressureUnit = unitFromView(generalView, 'Static_Pressure');
   conditions.ventLevel = optionalNumber(general.get('Vent_Level'));
-  conditions.ventLevelMin = optionalNumber(general.get('Min_Vent_Level'));
-  conditions.ventLevelMax = optionalNumber(general.get('Max_Vent_Level'));
-  conditions.heatersNow = onOffOrCount(digital.get('Heaters'));
-  conditions.birds = optionalNumber(general.get('Current_Birds_Count_In_House'));
-  conditions.livability = optionalNumber(general.get('Birds_Livability'));
-  conditions.dailyFeed =
-    optionalNumber(consumption.get('Daily_Feed')) ??
-    optionalNumber(general.get('Feed_Consumption'));
-  conditions.feedUnit =
-    unitFromView(consumptionView, 'Daily_Feed') || unitFromView(generalView, 'Feed_Consumption');
-  const averageWeight = optionalNumber(weight.get('Average_Weight'));
-  conditions.averageWeight = averageWeight > 0 ? averageWeight : null;
-  conditions.weightUnit = unitFromView(weightView, 'Average_Weight');
-  conditions.alarm = alarm;
-  conditions.siren = optionalBool(general.get('Siren'));
 
   return { growthDay, dailyWater, conditions };
 }
@@ -337,20 +247,11 @@ function parseWaterHistoryRows(rows) {
       row.TotalDrink ??
       row.TotalWater ??
       0;
-    const lines = [];
-    for (let i = 1; i <= 4; i++) {
-      const lineTotal = historyNumber(row[`HistoryRecord_DailyWater_${i}`]);
-      if (lineTotal != null) lines.push({ line: i, total: lineTotal });
-    }
     parsed.push({
       growthDay: Number(growthDay),
       total: parseNumeric(total),
-      changeTotal: historyNumber(row.HistoryRecord_ChangeTotal),
-      waterPerBird: historyNumber(row.HistoryRecord_WaterPerBird),
-      lines,
-      cooling: historyNumber(row.HistoryRecord_Cooling),
-      fogger: historyNumber(row.HistoryRecord_Fogger),
-      flushing: historyNumber(row.Flushing),
+      changeTotal: row.HistoryRecord_ChangeTotal ?? null,
+      waterPerBird: row.HistoryRecord_WaterPerBird ?? null,
     });
   }
   return parsed.sort((a, b) => a.growthDay - b.growthDay);
@@ -362,18 +263,20 @@ function parseHeaterHistoryRows(rows) {
     const growthDay = row.HistoryRecord_Heaters_GrowthDay ?? row.HistoryRecord_GrowthDay;
     if (growthDay == null || growthDay < 0) continue;
 
-    const devices = [];
-    for (let i = 1; i <= 16; i++) {
-      const mins = parseDurationToMinutes(row[`HistoryRecord_Heaters_HeaterDevice_${i}`]);
-      if (mins > 0) devices.push({ device: i, minutes: Math.round(mins) });
-    }
-
     let totalMinutes =
       parseDurationToMinutes(row.HistoryRecord_Heaters_TotalRuntime) ||
       parseDurationToMinutes(row.HistoryRecord_Heaters_Total);
-    // Real heater history has per-device times and no total column.
+
+    const devices = [];
     if (!totalMinutes) {
-      totalMinutes = devices.reduce((sum, device) => sum + device.minutes, 0);
+      for (let i = 1; i <= 16; i++) {
+        const key = `HistoryRecord_Heaters_HeaterDevice_${i}`;
+        const mins = parseDurationToMinutes(row[key]);
+        if (mins > 0) {
+          devices.push({ device: i, minutes: mins });
+          totalMinutes += mins;
+        }
+      }
     }
 
     parsed.push({
@@ -398,20 +301,10 @@ function lastNGrowthDays(history, currentGrowthDay, count, valueField = 'total')
   for (let offset = count - 1; offset >= 0; offset--) {
     const growthDay = currentGrowthDay - offset;
     const row = valueForGrowthDay(history, growthDay);
-    const entry = {
+    rows.push({
       growthDay,
       total: valueField === 'totalMinutes' ? (row?.totalMinutes ?? null) : (row?.total ?? null),
-    };
-    if (valueField === 'totalMinutes') {
-      entry.devices = row?.devices ?? [];
-    } else {
-      entry.waterPerBird = row?.waterPerBird ?? null;
-      entry.lines = row?.lines ?? [];
-      entry.cooling = row?.cooling ?? null;
-      entry.fogger = row?.fogger ?? null;
-      entry.flushing = row?.flushing ?? null;
-    }
-    rows.push(entry);
+    });
   }
   return rows;
 }
@@ -437,7 +330,6 @@ function emptyHouseReport(house, errorMessage, liveData) {
   const seeded = {
     ...blankConditions(),
     ...(liveData?.conditions || {}),
-    controllerAlarms: [...(liveData?.conditions?.controllerAlarms || [])],
   };
   return {
     houseNumber,
@@ -460,7 +352,6 @@ function emptyHouseReport(house, errorMessage, liveData) {
       last2Days: [],
       last2DaysTotalMinutes: null,
       devices: [],
-      yesterdayDevices: [],
       historyRows: [],
     },
   };
@@ -880,7 +771,6 @@ class RotemClient {
       {
         ...blankConditions(),
         ...(liveData.conditions || {}),
-        controllerAlarms: [...(liveData.conditions?.controllerAlarms || [])],
       },
       house,
     );
@@ -916,7 +806,6 @@ class RotemClient {
         last2Days: heaterLast2Days,
         last2DaysTotalMinutes: heaterLast2DaysTotal,
         devices: todayHeater?.devices ?? [],
-        yesterdayDevices: yesterdayHeater?.devices ?? [],
         historyRows: heaterHistory,
       },
     };
