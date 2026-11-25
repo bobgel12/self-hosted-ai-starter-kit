@@ -27,6 +27,68 @@ function severityColor(severity) {
   return '#2563eb';
 }
 
+function escapeHtml(value) {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function fmtMeasure(n) {
+  if (n == null) return '—';
+  return Number(n).toLocaleString('en-US', { maximumFractionDigits: 1 });
+}
+
+function withUnit(text, unit, html) {
+  if (!unit) return text;
+  const suffix = html ? ` ${escapeHtml(unit)}` : ` ${unit}`;
+  return `${text}${suffix}`;
+}
+
+function fmtTempTrio(conditions, html) {
+  const c = conditions || {};
+  if (c.averageTemperature == null && c.setTemperature == null && c.outsideTemperature == null) {
+    return '—';
+  }
+  const parts = [c.averageTemperature, c.setTemperature, c.outsideTemperature].map((n) =>
+    n == null ? '—' : fmtMeasure(n),
+  );
+  return withUnit(parts.join(' / '), c.temperatureUnit, html);
+}
+
+function fmtHumidity(conditions) {
+  if (conditions?.insideHumidity == null) return '—';
+  return `${fmtMeasure(conditions.insideHumidity)}%`;
+}
+
+function fmtPressure(conditions, html) {
+  const c = conditions || {};
+  if (c.staticPressure == null) return '—';
+  return withUnit(fmtMeasure(c.staticPressure), c.pressureUnit, html);
+}
+
+function fmtVent(conditions) {
+  if (conditions?.ventLevel == null) return '—';
+  return fmtMeasure(conditions.ventLevel);
+}
+
+const LIVE_COLUMNS = [
+  { key: 'temp', label: 'Temp avg / set / out' },
+  { key: 'humidity', label: 'Humidity' },
+  { key: 'pressure', label: 'Static pressure' },
+  { key: 'vent', label: 'Vent level' },
+];
+
+function conditionsCell(house, key, html) {
+  const c = house.conditions || {};
+  if (key === 'temp') return fmtTempTrio(c, html);
+  if (key === 'humidity') return fmtHumidity(c);
+  if (key === 'pressure') return fmtPressure(c, html);
+  if (key === 'vent') return fmtVent(c);
+  return '—';
+}
+
 function waterDayHeaders(houses) {
   const sample = (houses || []).find((h) => h.water?.last3Days?.length)?.water.last3Days;
   if (!sample?.length) return ['Day −2', 'Day −1', 'Today'];
@@ -164,6 +226,21 @@ function buildEmail(report, recipientEmail, reportPeriod) {
     })
     .join('');
 
+  const liveRows = (report.houses || [])
+    .map((h) => {
+      const cells = LIVE_COLUMNS
+        .map(
+          (col) =>
+            `<td style="padding:8px;border:1px solid #e5e7eb;text-align:center">${conditionsCell(h, col.key, true)}</td>`,
+        )
+        .join('');
+      return `<tr>
+        <td style="padding:8px;border:1px solid #e5e7eb">${h.houseName}</td>
+        ${cells}
+      </tr>`;
+    })
+    .join('');
+
   const groupedAlerts = groupAlertsByHouse(report.alerts || []);
   const alertsHtml =
     groupedAlerts.length === 0
@@ -188,6 +265,18 @@ function buildEmail(report, recipientEmail, reportPeriod) {
   ${baselineNote}
   <h2 style="margin-top:24px">Alerts (${report.alertCount ?? 0})</h2>
   ${alertsHtml}
+
+  <h2 style="margin-top:28px">Live conditions</h2>
+  <p style="color:#6b7280;font-size:13px;margin-top:0">Current controller readings. Temperature is average / set point / outside.</p>
+  <table style="border-collapse:collapse;width:100%;font-size:13px;margin-top:8px">
+    <thead>
+      <tr style="background:#f0fdf4">
+        <th style="padding:8px;border:1px solid #e5e7eb;text-align:left">House</th>
+        ${LIVE_COLUMNS.map((col) => `<th style="padding:8px;border:1px solid #e5e7eb">${col.label}</th>`).join('')}
+      </tr>
+    </thead>
+    <tbody>${liveRows}</tbody>
+  </table>
 
   <h2 style="margin-top:28px">Water — Last 3 Flock Days</h2>
   <p style="color:#6b7280;font-size:13px;margin-top:0">Daily water total per house (Rotem history, by flock day).</p>
@@ -256,6 +345,12 @@ function buildEmail(report, recipientEmail, reportPeriod) {
     for (const a of groupedAlerts) {
       textLines.push(`  [${a.severity.toUpperCase()}] ${a.message}`);
     }
+  }
+
+  textLines.push('', 'Live conditions:');
+  for (const h of report.houses || []) {
+    const bits = LIVE_COLUMNS.map((col) => `${col.label}: ${conditionsCell(h, col.key, false)}`);
+    textLines.push(`  ${h.houseName}: ${bits.join(' | ')}`);
   }
 
   textLines.push('', 'Water — Last 3 flock days:');

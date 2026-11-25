@@ -115,23 +115,108 @@ function parseNumeric(value) {
   return Number.isNaN(num) ? 0 : num;
 }
 
+/** Null for blank, N/A, and Rotem placeholders. Zero stays zero. */
+function optionalNumber(value) {
+  if (value == null) return null;
+  const str = String(value).trim();
+  if (!str || str === 'N/A' || str === '- - -' || str.startsWith('LangKey_')) return null;
+  const num = parseFloat(str.replace(/,/g, ''));
+  return Number.isNaN(num) ? null : num;
+}
+
+function indexParams(rows) {
+  const map = new Map();
+  for (const row of rows || []) {
+    if (row?.ParameterKeyName) map.set(row.ParameterKeyName, row.ParameterValue);
+  }
+  return map;
+}
+
+function firstView(rows) {
+  return Array.isArray(rows) && rows[0] && typeof rows[0] === 'object' ? rows[0] : {};
+}
+
+function unitFromView(view, key) {
+  const sign = view?.[`${key}_Sign`];
+  if (sign == null || String(sign).trim() === '') return null;
+  return String(sign).trim();
+}
+
+function blankConditions() {
+  return {
+    averageTemperature: null,
+    setTemperature: null,
+    outsideTemperature: null,
+    temperatureUnit: null,
+    insideHumidity: null,
+    staticPressure: null,
+    pressureUnit: null,
+    ventLevel: null,
+  };
+}
+
+/**
+ * Ignore the all-zero controller card Rotem sends when a metric has no reading.
+ * A real zero still counts when CurrentValue / TargetValue is filled in.
+ */
+function meaningfulControllerNumber(block, field) {
+  if (!block) return null;
+  const numeric = block[field];
+  if (numeric == null || numeric === '') return null;
+  const num = Number(numeric);
+  if (Number.isNaN(num)) return null;
+  const display = field === 'CurrentNumericValue' ? block.CurrentValue : block.TargetValue;
+  if (num === 0 && (display == null || display === '')) return null;
+  return num;
+}
+
+function applyControllerSnapshot(conditions, house) {
+  const data = house?.Data || {};
+  const fill = (section, currentKey, targetKey, unitKey) => {
+    const block = data[section];
+    if (!block) return;
+    if (currentKey && conditions[currentKey] == null) {
+      const current = meaningfulControllerNumber(block, 'CurrentNumericValue');
+      if (current != null) conditions[currentKey] = current;
+    }
+    if (targetKey && conditions[targetKey] == null) {
+      const target = meaningfulControllerNumber(block, 'TargetNumericValue');
+      if (target != null) conditions[targetKey] = target;
+    }
+    if (unitKey && conditions[unitKey] == null && block.UnitsStr) {
+      conditions[unitKey] = String(block.UnitsStr);
+    }
+  };
+
+  fill('Temperature', 'averageTemperature', 'setTemperature', 'temperatureUnit');
+  fill('Humidity', 'insideHumidity', null, null);
+  fill('Pressure', 'staticPressure', null, 'pressureUnit');
+  fill('VentLevel', 'ventLevel', null, null);
+  return conditions;
+}
+
 function parseLiveHouseData(responseObj) {
-  const general = responseObj?.dsData?.General ?? [];
-  const consumption = responseObj?.dsData?.Consumption ?? [];
+  const ds = responseObj?.dsData ?? {};
+  const general = indexParams(ds.General);
+  const consumption = indexParams(ds.Consumption);
+  const generalView = firstView(ds.General_DisplayValues);
 
-  const growthDayRow = general.find((g) => g.ParameterKeyName === 'Growth_Day');
-  const dailyWaterRow = consumption.find((c) => c.ParameterKeyName === 'Daily_Water');
+  const growthDay = optionalNumber(general.get('Growth_Day'));
+  const dailyWater = optionalNumber(consumption.get('Daily_Water'));
 
-  const growthDay =
-    growthDayRow?.ParameterValue != null && growthDayRow.ParameterValue !== ''
-      ? Number(growthDayRow.ParameterValue)
-      : null;
-  const dailyWater =
-    dailyWaterRow?.ParameterValue != null && dailyWaterRow.ParameterValue !== ''
-      ? parseNumeric(dailyWaterRow.ParameterValue)
-      : null;
+  const conditions = blankConditions();
+  conditions.averageTemperature = optionalNumber(general.get('Average_Temperature'));
+  conditions.setTemperature = optionalNumber(general.get('Set_Temperature'));
+  conditions.outsideTemperature = optionalNumber(general.get('Outside_Temperature'));
+  conditions.temperatureUnit =
+    unitFromView(generalView, 'Average_Temperature') ||
+    unitFromView(generalView, 'Set_Temperature');
+  conditions.insideHumidity = optionalNumber(general.get('Inside_Humidity'));
+  conditions.staticPressure = optionalNumber(general.get('Static_Pressure'));
+  conditions.pressureUnit = unitFromView(generalView, 'Static_Pressure');
+  conditions.ventLevel = optionalNumber(general.get('Vent_Level'));
 
-  return { growthDay, dailyWater };
+  return { growthDay, dailyWater, conditions };
 }
 
 function resolveCurrentGrowthDay(liveGrowthDay, controllerGrowthDay, waterHistory, heaterHistory) {
@@ -240,14 +325,19 @@ function commandDataReady(body) {
   );
 }
 
-function emptyHouseReport(house, errorMessage) {
+function emptyHouseReport(house, errorMessage, liveData) {
   const houseNumber = house.HouseNumber;
+  const seeded = {
+    ...blankConditions(),
+    ...(liveData?.conditions || {}),
+  };
   return {
     houseNumber,
     houseName: house.HouseName ?? `House ${houseNumber}`,
-    growthDay: house.GrowthDay ?? null,
+    growthDay: liveData?.growthDay ?? house.GrowthDay ?? null,
     connectionStatus: house.ConnectionStatus ?? 0,
     fetchError: errorMessage,
+    conditions: applyControllerSnapshot(seeded, house),
     water: {
       todayTotal: null,
       yesterdayTotal: null,
@@ -624,7 +714,7 @@ class RotemClient {
 
     let waterHistory = [];
     let heaterHistory = [];
-    let liveData = { growthDay: null, dailyWater: null };
+    let liveData = { growthDay: null, dailyWater: null, conditions: blankConditions() };
 
     if (connectionStatus === 1) {
       const liveBody = await this.getCommandData(houseNumber, '0');
@@ -646,6 +736,7 @@ class RotemClient {
         return emptyHouseReport(
           house,
           'RotemNet returned no history after retries',
+          liveData,
         );
       }
 
@@ -676,12 +767,20 @@ class RotemClient {
     const waterLast3Days = lastNGrowthDays(waterHistory, currentGrowthDay, 3, 'total');
     const heaterLast2Days = lastNGrowthDays(heaterHistory, currentGrowthDay, 2, 'totalMinutes');
     const heaterLast2DaysTotal = sumLastNDays(heaterLast2Days);
+    const conditions = applyControllerSnapshot(
+      {
+        ...blankConditions(),
+        ...(liveData.conditions || {}),
+      },
+      house,
+    );
 
     return {
       houseNumber,
       houseName,
       growthDay: currentGrowthDay,
       connectionStatus,
+      conditions,
       liveDailyWater:
         liveData.dailyWater ??
         house.Data?.DailyWater?.CurrentNumericValue ??
@@ -779,6 +878,7 @@ module.exports = {
   parseWaterHistoryRows,
   parseHeaterHistoryRows,
   parseLiveHouseData,
+  applyControllerSnapshot,
   parseDurationToMinutes,
   parseNumeric,
   pctChange,
