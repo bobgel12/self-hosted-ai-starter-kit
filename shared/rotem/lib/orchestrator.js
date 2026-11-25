@@ -188,8 +188,17 @@ async function processFarm(farm, globalConfig, thresholds, options = {}) {
   enriched.reportPeriod = reportPeriod;
   enriched.recipientEmail = recipientEmail;
 
+  let snapshotSaved = false;
+  let snapshotError = null;
   if (!dryRun) {
-    saveSnapshot(enriched, reportPeriod);
+    try {
+      saveSnapshot(enriched, reportPeriod);
+      snapshotSaved = true;
+    } catch (err) {
+      // History on the Railway volume can be unwritable even after a good
+      // fetch. Keep the report; do not turn that into the error email.
+      snapshotError = err && err.message ? err.message : String(err);
+    }
   }
 
   const email = buildEmail(enriched, recipientEmail, reportPeriod);
@@ -200,7 +209,8 @@ async function processFarm(farm, globalConfig, thresholds, options = {}) {
     farmId: farm.id,
     report: enriched,
     email,
-    snapshotSaved: !dryRun,
+    snapshotSaved,
+    snapshotError,
   };
 }
 
