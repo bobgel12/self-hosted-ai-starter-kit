@@ -28,8 +28,10 @@ jobs:
             echo "then add it as RAILWAY_TOKEN under GitHub → Settings → Secrets."
             exit 1
           fi
+          # Wait for the Railway build and healthcheck. --detach made this job
+          # green as soon as the upload finished, including when the new image
+          # never replaced the running container.
           railway up \
             --service=rotem-poultry-n8n \
             --ci \
-            --detach \
             -m "GitHub Actions deploy ${GITHUB_SHA}"

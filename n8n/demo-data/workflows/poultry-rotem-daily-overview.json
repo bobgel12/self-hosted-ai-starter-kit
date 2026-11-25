@@ -96,13 +96,25 @@
     },
     {
       "parameters": {
-        "mode": "runOnceForEachItem",
-        "jsCode": "const fs = require('fs');\nconst ROTEM_ROOT = '/data/shared/rotem';\n\nfunction readLibStamp() {\n  try {\n    return fs.readFileSync(`${ROTEM_ROOT}/IMAGE_STAMP.txt`, 'utf8').trim().split('\\n').slice(0, 4).join(' | ');\n  } catch {\n    return 'IMAGE_STAMP missing \u2014 volume libs may be stale';\n  }\n}\n\nfunction assertFreshLibs() {\n  const clientPath = `${ROTEM_ROOT}/lib/rotem-client.js`;\n  const src = fs.readFileSync(clientPath, 'utf8');\n  const missing = [];\n  if (!src.includes('resolveGatewayFromAccounts')) missing.push('resolveGatewayFromAccounts');\n  if (!src.includes('GATEWAY_DISCONNECTED')) missing.push('GATEWAY_DISCONNECTED');\n  if (missing.length) {\n    throw new Error(\n      `Stale Rotem lib on volume (missing ${missing.join(', ')}). Redeploy image so entrypoint refreshes /data/shared/rotem/lib. Stamp: ${readLibStamp()}`,\n    );\n  }\n}\n\n// Task runner caches require() \u2014 bust cache so volume-mounted lib updates apply.\nfor (const mod of [\n  `${ROTEM_ROOT}/lib/orchestrator.js`,\n  `${ROTEM_ROOT}/lib/rotem-client.js`,\n  `${ROTEM_ROOT}/lib/compare-anomaly.js`,\n  `${ROTEM_ROOT}/lib/email-builder.js`,\n  `${ROTEM_ROOT}/lib/concurrency.js`,\n]) {\n  try {\n    delete require.cache[require.resolve(mod)];\n  } catch {}\n}\n\nassertFreshLibs();\n\nconst { processFarm } = require(`${ROTEM_ROOT}/lib/orchestrator.js`);\nconst source = $json;\nconst libStamp = readLibStamp();\n\n// Always load credentials from disk; do not trust farm object passed through n8n items.\nconst config = JSON.parse(fs.readFileSync(`${ROTEM_ROOT}/farms.json`, 'utf8'));\nconst thresholds = JSON.parse(fs.readFileSync(`${ROTEM_ROOT}/thresholds.json`, 'utf8'));\nconst farm = (config.farms || []).find((f) => f.id === source.farm?.id);\n\nif (!farm) {\n  return {\n    json: {\n      skipped: false,\n      error: true,\n      farmId: source.farm?.id,\n      farmName: source.farm?.displayName || source.farm?.id,\n      message: `Farm not found in farms.json: ${source.farm?.id} | ${libStamp}`,\n      config,\n      libStamp,\n    },\n  };\n}\n\nif (!farm.rotemUsername || !farm.rotemPassword) {\n  return {\n    json: {\n      skipped: false,\n      error: true,\n      farmId: farm.id,\n      farmName: farm.displayName || farm.id,\n      message: `Missing rotemUsername or rotemPassword in farms.json | ${libStamp}`,\n      config,\n      libStamp,\n    },\n  };\n}\n\nif (!farm.rotemGatewayCode) {\n  // Soft warning only \u2014 resolveGatewayFromAccounts can recover, but bobby-angel\n  // historically needed the explicit gateway code when Login omits FarmConnectionInfo.\n  console.warn(`Farm ${farm.id} missing rotemGatewayCode; relying on GetUserAccounts`);\n}\n\ntry {\n  const result = await processFarm(farm, config, thresholds, {\n    skipScheduleCheck: source.skipScheduleCheck || source.manual,\n  });\n\n  if (result.skipped) {\n    return {\n      json: {\n        skipped: true,\n        reason: result.reason,\n        farmId: result.farmId,\n        config,\n        error: false,\n        libStamp,\n      },\n    };\n  }\n\n  return {\n    json: {\n      ...result,\n      config,\n      error: false,\n      skipped: false,\n      libStamp,\n      houseCount: result.report?.houses?.length ?? 0,\n    },\n  };\n} catch (error) {\n  return {\n    json: {\n      skipped: false,\n      error: true,\n      farmId: farm.id,\n      farmName: farm.displayName || farm.id,\n      message: `${error.message} | ${libStamp}`,\n      config,\n      libStamp,\n    },\n  };\n}"
+        "method": "POST",
+        "url": "http://127.0.0.1:8791/run",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ ({ farmId: $json.farm.id, skipScheduleCheck: !!($json.skipScheduleCheck || $json.manual) }) }}",
+        "options": {
+          "timeout": 1200000,
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
       },
       "id": "a1b2c3d4-run-farm-script-0013",
       "name": "Process Farm",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
       "position": [
         1020,
         300
@@ -142,7 +154,7 @@
     {
       "parameters": {
         "mode": "runOnceForEachItem",
-        "jsCode": "const fs = require('fs');\nconst path = require('path');\n\nconst item = $input.item.json;\nconst email = item.email;\nif (!email) throw new Error('Missing email payload');\n\nconst outbox = '/data/shared/rotem/outbox';\nfs.mkdirSync(outbox, { recursive: true });\nconst slug = `${item.farmId}-${Date.now()}`;\nconst htmlPath = path.join(outbox, `${slug}.html`);\nconst metaPath = path.join(outbox, `${slug}.meta.json`);\n\nfs.writeFileSync(htmlPath, email.html);\nfs.writeFileSync(path.join(outbox, `${slug}.txt`), email.text);\nfs.writeFileSync(\n  metaPath,\n  JSON.stringify(\n    {\n      to: email.to,\n      from: email.from,\n      subject: email.subject,\n      farmId: item.farmId,\n      alertCount: item.report?.alertCount ?? 0,\n      savedAt: new Date().toISOString(),\n    },\n    null,\n    2,\n  ),\n);\n\nreturn {\n  json: {\n    ...item,\n    outboxPath: htmlPath,\n    outboxMetaPath: metaPath,\n  },\n};"
+        "jsCode": "const fs = require('fs');\nconst path = require('path');\n\nconst item = $input.item.json;\nif (item.skipped || !item.email) {\n  return { json: { ...item, skipped: true, reason: item.reason || 'missing_email' } };\n}\nconst email = item.email;\n\nconst outbox = '/data/shared/rotem/outbox';\nfs.mkdirSync(outbox, { recursive: true });\nconst slug = `${item.farmId}-${Date.now()}`;\nconst htmlPath = path.join(outbox, `${slug}.html`);\nconst metaPath = path.join(outbox, `${slug}.meta.json`);\n\nfs.writeFileSync(htmlPath, email.html);\nfs.writeFileSync(path.join(outbox, `${slug}.txt`), email.text);\nfs.writeFileSync(\n  metaPath,\n  JSON.stringify(\n    {\n      to: email.to,\n      from: email.from,\n      subject: email.subject,\n      farmId: item.farmId,\n      alertCount: item.report?.alertCount ?? 0,\n      savedAt: new Date().toISOString(),\n    },\n    null,\n    2,\n  ),\n);\n\nreturn {\n  json: {\n    ...item,\n    outboxPath: htmlPath,\n    outboxMetaPath: metaPath,\n  },\n};"
       },
       "id": "a1b2c3d4-save-outbox-0011",
       "name": "Save Report Outbox",
@@ -156,7 +168,7 @@
     {
       "parameters": {
         "mode": "runOnceForEachItem",
-        "jsCode": "const fs = require('fs');\nconst { sendEmail } = require('/data/shared/rotem/lib/email-sender.js');\n\nconst item = $input.item.json;\nconst email = item.email;\nif (!email) {\n  return { json: { ...item, emailSent: false, emailError: 'Missing email payload' } };\n}\n\nconst config = JSON.parse(fs.readFileSync('/data/shared/rotem/farms.json', 'utf8'));\nconst smtp = { ...(config.smtp || {}), useApi: true };\n\ntry {\n  const result = await sendEmail(email, smtp);\n  return {\n    json: {\n      ...item,\n      emailSent: true,\n      emailProvider: result.provider,\n      emailId: result.id,\n    },\n  };\n} catch (err) {\n  return {\n    json: {\n      ...item,\n      emailSent: false,\n      emailError: err.message,\n    },\n  };\n}"
+        "jsCode": "const fs = require('fs');\nconst { sendEmail } = require('/data/shared/rotem/lib/email-sender.js');\n\nconst item = $input.item.json;\nconst email = item.email;\nif (item.skipped || !email) {\n  return { json: { ...item, emailSent: false, emailError: item.reason || 'Missing email payload' } };\n}\n\nconst config = JSON.parse(fs.readFileSync('/data/shared/rotem/farms.json', 'utf8'));\nconst smtp = { ...(config.smtp || {}), useApi: true };\n\ntry {\n  const result = await sendEmail(email, smtp);\n  return {\n    json: {\n      ...item,\n      emailSent: true,\n      emailProvider: result.provider,\n      emailId: result.id,\n    },\n  };\n} catch (err) {\n  return {\n    json: {\n      ...item,\n      emailSent: false,\n      emailError: err.message,\n    },\n  };\n}"
       },
       "id": "a1b2c3d4-send-report-0007",
       "name": "Send Report Email",
@@ -170,7 +182,7 @@
     {
       "parameters": {
         "mode": "runOnceForEachItem",
-        "jsCode": "const item = $input.item.json;\nconst config = item.config || {};\nconst to = config.recipientEmail || 'you@example.com';\nconst from = config.senderEmail || to;\nconst farmLabel = item.farmName || item.farmId || 'unknown farm';\nconst stamp = item.libStamp ? `<p style=\"color:#6b7280;font-size:12px\">Lib: ${item.libStamp}</p>` : '';\n\nreturn {\n  json: {\n    ...item,\n    email: {\n      to,\n      from,\n      subject: `[RotemNet] Error \u2014 ${farmLabel}`,\n      html: `<!DOCTYPE html><html><body style=\"font-family:Arial,sans-serif\"><h2>RotemNet workflow error</h2><p><strong>Farm:</strong> ${farmLabel}</p><pre style=\"background:#fef2f2;padding:12px;border-radius:6px\">${item.message || 'Unknown error'}</pre>${stamp}<p style=\"color:#6b7280;font-size:12px\">${new Date().toISOString()}</p></body></html>`,\n      text: `RotemNet workflow error for ${farmLabel}: ${item.message || 'Unknown error'}`,\n    },\n  },\n};"
+        "jsCode": "const fs = require('fs');\nconst item = $input.item.json;\nlet config = {};\ntry {\n  config = JSON.parse(fs.readFileSync('/data/shared/rotem/farms.json', 'utf8'));\n} catch {}\nconst to = config.recipientEmail || 'you@example.com';\nconst from = config.senderEmail || to;\nconst farmLabel = item.farmName || item.farmId || 'unknown farm';\nconst stamp = item.libStamp ? `<p style=\"color:#6b7280;font-size:12px\">Lib: ${item.libStamp}</p>` : '';\n\nreturn {\n  json: {\n    ...item,\n    email: {\n      to,\n      from,\n      subject: `[RotemNet] Error — ${farmLabel}`,\n      html: `<!DOCTYPE html><html><body style=\"font-family:Arial,sans-serif\"><h2>RotemNet workflow error</h2><p><strong>Farm:</strong> ${farmLabel}</p><pre style=\"background:#fef2f2;padding:12px;border-radius:6px\">${item.message || 'Unknown error'}</pre>${stamp}<p style=\"color:#6b7280;font-size:12px\">${new Date().toISOString()}</p></body></html>`,\n      text: `RotemNet workflow error for ${farmLabel}: ${item.message || 'Unknown error'}`,\n    },\n  },\n};"
       },
       "id": "a1b2c3d4-build-error-0008",
       "name": "Build Error Email",
@@ -211,7 +223,7 @@
     },
     {
       "parameters": {
-        "content": "## Poultry RotemNet Daily Overview\n\n**Setup**\n1. `shared/rotem/farms.json` \u2014 farm + `smtp` block (Resend API key as `password`)\n2. Email via **Resend HTTPS API** (Railway blocks SMTP on Hobby plan)\n3. Run **Manual Test Trigger** (~1\u20132 min per farm)\n\n**Schedule:** Hourly; farms run at **6 AM** and **6 PM** Eastern.",
+        "content": "## Poultry RotemNet Daily Overview\n\n**Setup**\n1. `shared/rotem/farms.json` — farm + `smtp` block (Resend API key as `password`)\n2. Email via **Resend HTTPS API** (Railway blocks SMTP on Hobby plan)\n3. Run **Manual Test Trigger**. Bobby Angel can take about 10 minutes; the fetch runs on the local report server, not in the 300s task runner.\n\n**Schedule:** Hourly; farms run at **6 AM** and **6 PM** Eastern.",
         "height": 300,
         "width": 420
       },

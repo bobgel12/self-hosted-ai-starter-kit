@@ -1,0 +1,82 @@
+{
+  "id": "rotemImageStamp001",
+  "name": "Rotem image stamp",
+  "active": true,
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "rotem-image-stamp",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "stamp-webhook-0001",
+      "name": "Stamp Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [240, 300],
+      "webhookId": "rotem-image-stamp"
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "http://127.0.0.1:8791/health",
+        "options": {
+          "timeout": 10000,
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "stamp-http-0001",
+      "name": "Read Stamp",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [480, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {}
+      },
+      "id": "stamp-respond-0001",
+      "name": "Respond Stamp",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [720, 300]
+    }
+  ],
+  "connections": {
+    "Stamp Webhook": {
+      "main": [
+        [
+          {
+            "node": "Read Stamp",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Stamp": {
+      "main": [
+        [
+          {
+            "node": "Respond Stamp",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "meta": {
+    "templateCredsSetupCompleted": true
+  }
+}
