@@ -386,6 +386,24 @@ async function main() {
     if (!compareAnomaly.completedWaterChange || !compareAnomaly.loadSameSlotSnapshot) {
       throw new Error('compare-anomaly export missing');
     }
+    for (const needle of [
+      'Water — Last 3 Flock Days',
+      'Heater Runtime — Last 2 Flock Days',
+      'Day-over-Day Summary',
+      'Yesterday this time',
+      'Heater today',
+      'Last full day',
+    ]) {
+      assertIncludes(html, needle, 'full tables');
+    }
+    const waterBlock = text.split('Water — Last 3 flock days:')[1]?.split('Heater — Last 2 flock days')[0] || '';
+    const heaterBlock = text.split('Heater — Last 2 flock days (total):')[1]?.split('Day-over-day summary:')[0] || '';
+    const summaryBlock = text.split('Day-over-day summary:')[1] || '';
+    for (const houseName of ['House 1', 'House 2']) {
+      assertIncludes(waterBlock, `${houseName}:`, 'every-house water');
+      assertIncludes(heaterBlock, `${houseName}:`, 'every-house heater');
+      assertIncludes(summaryBlock, `${houseName} |`, 'every-house summary');
+    }
     assertIncludes(text, 'House 1 | day 21', 'collapsed house');
     assertIncludes(text, 'yesterday this time —', 'missing same-slot compare');
     assertIncludes(html, 'Needs attention', 'expanded section');
