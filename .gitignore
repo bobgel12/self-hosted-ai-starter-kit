@@ -1,5 +1,7 @@
 .env
-.railway/
+.railway/*
+!.railway/railway.ts
+!.railway/README.md
 shared/rotem/farms.json
 shared/rotem/farms.test.json
 shared/rotem/history/**/*

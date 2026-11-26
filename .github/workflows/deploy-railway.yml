@@ -20,6 +20,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Install a terminal helper
+        run: apk add --no-cache util-linux
+
+      - name: Save service settings before upload
+        env:
+          RAILWAY_SERVICE_CONFIG_SAVED: ${{ vars.RAILWAY_SERVICE_CONFIG_SAVED }}
+        run: sh railway/persist-service-config.sh
+
       - name: Deploy to Railway production
         run: |
           if [ -z "$RAILWAY_TOKEN" ]; then
