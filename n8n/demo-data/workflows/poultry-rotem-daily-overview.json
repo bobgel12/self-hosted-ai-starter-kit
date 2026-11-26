@@ -118,7 +118,8 @@
       "position": [
         1020,
         300
-      ]
+      ],
+      "onError": "continueErrorOutput"
     },
     {
       "parameters": {
@@ -182,7 +183,7 @@
     {
       "parameters": {
         "mode": "runOnceForEachItem",
-        "jsCode": "const fs = require('fs');\nconst item = $input.item.json;\nlet config = {};\ntry {\n  config = JSON.parse(fs.readFileSync('/data/shared/rotem/farms.json', 'utf8'));\n} catch {}\nconst to = config.recipientEmail || 'you@example.com';\nconst from = config.senderEmail || to;\nconst farmLabel = item.farmName || item.farmId || 'unknown farm';\nconst stamp = item.libStamp ? `<p style=\"color:#6b7280;font-size:12px\">Lib: ${item.libStamp}</p>` : '';\n\nreturn {\n  json: {\n    ...item,\n    email: {\n      to,\n      from,\n      subject: `[RotemNet] Error — ${farmLabel}`,\n      html: `<!DOCTYPE html><html><body style=\"font-family:Arial,sans-serif\"><h2>RotemNet workflow error</h2><p><strong>Farm:</strong> ${farmLabel}</p><pre style=\"background:#fef2f2;padding:12px;border-radius:6px\">${item.message || 'Unknown error'}</pre>${stamp}<p style=\"color:#6b7280;font-size:12px\">${new Date().toISOString()}</p></body></html>`,\n      text: `RotemNet workflow error for ${farmLabel}: ${item.message || 'Unknown error'}`,\n    },\n  },\n};"
+        "jsCode": "const fs = require('fs');\nconst { buildFailureEmail } = require('/data/shared/rotem/lib/email-builder.js');\n\nconst item = $input.item.json || {};\nlet itemError = null;\ntry {\n  itemError = $input.item.error || null;\n} catch {}\n\nlet config = {};\ntry {\n  config = JSON.parse(fs.readFileSync('/data/shared/rotem/farms.json', 'utf8'));\n} catch {}\n\nlet queuedFarm = null;\ntry {\n  queuedFarm = $('Any Farms Due?').item.json.farm || null;\n} catch {}\n\nlet stamp = item.libStamp || '';\nif (!stamp) {\n  try {\n    stamp = fs\n      .readFileSync('/data/shared/rotem/IMAGE_STAMP.txt', 'utf8')\n      .trim()\n      .split('\\n')\n      .slice(0, 4)\n      .join(' | ');\n  } catch {\n    stamp = 'IMAGE_STAMP missing';\n  }\n}\n\nconst email = buildFailureEmail({\n  item,\n  itemError,\n  farm: queuedFarm,\n  config,\n  stamp,\n});\n\nreturn {\n  json: {\n    ...item,\n    farmId: item.farmId || (queuedFarm && queuedFarm.id) || null,\n    farmName: item.farmName || (queuedFarm && queuedFarm.displayName) || item.farmId,\n    libStamp: stamp,\n    message: email.causeDetail,\n    email,\n  },\n};"
       },
       "id": "a1b2c3d4-build-error-0008",
       "name": "Build Error Email",
@@ -298,6 +299,13 @@
         [
           {
             "node": "Report OK?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Error Email",
             "type": "main",
             "index": 0
           }

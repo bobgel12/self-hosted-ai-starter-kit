@@ -8,9 +8,16 @@ function fmtNum(n) {
 }
 
 function fmtPct(n) {
-  if (n == null) return '—';
+  if (n == null || Number.isNaN(Number(n))) return '—';
   const sign = n > 0 ? '+' : '';
   return `${sign}${n}%`;
+}
+
+function fmtSignedNum(n) {
+  if (n == null || Number.isNaN(Number(n))) return '—';
+  const num = Number(n);
+  const sign = num > 0 ? '+' : '';
+  return `${sign}${num.toLocaleString('en-US', { maximumFractionDigits: 1 })}`;
 }
 
 function fmtMinutes(m) {
@@ -89,18 +96,6 @@ function conditionsCell(house, key, html) {
   return '—';
 }
 
-function waterDayHeaders(houses) {
-  const sample = (houses || []).find((h) => h.water?.last3Days?.length)?.water.last3Days;
-  if (!sample?.length) return ['Day −2', 'Day −1', 'Today'];
-  return sample.map((d) => `Day ${d.growthDay}`);
-}
-
-function heaterDayHeaders(houses) {
-  const sample = (houses || []).find((h) => h.heaters?.last2Days?.length)?.heaters.last2Days;
-  if (!sample?.length) return ['Prior day', 'Latest day'];
-  return sample.map((d) => `Day ${d.growthDay}`);
-}
-
 const SEVERITY_RANK = { critical: 0, warning: 1, info: 2 };
 
 function stripHousePrefix(message, houseName, houseNumber) {
@@ -141,6 +136,218 @@ function groupAlertsByHouse(alerts) {
   return groups;
 }
 
+function sameSlotFields(house) {
+  const slot = house.sameSlot || {};
+  const soFar = slot.waterSoFar != null ? slot.waterSoFar : house.water?.todayTotal;
+  if (!slot.hasPrevious) {
+    return {
+      soFarText: fmtNum(soFar),
+      yesterdayText: '—',
+      deltaGalText: '—',
+      deltaPctText: '—',
+    };
+  }
+  return {
+    soFarText: fmtNum(slot.waterSoFar),
+    yesterdayText: fmtNum(slot.yesterdayWater),
+    deltaGalText: fmtSignedNum(slot.deltaGallons),
+    deltaPctText: fmtPct(slot.deltaPct),
+  };
+}
+
+function fullDayPctText(house) {
+  return fmtPct(completedWaterChange(house)?.pct);
+}
+
+function waterHistoryText(house) {
+  const days = house.water?.last3Days ?? [];
+  if (!days.length) return '—';
+  return days.map((d) => `day ${d.growthDay}: ${fmtNum(d.total)}`).join(', ');
+}
+
+function heaterHistoryText(house) {
+  const days = house.heaters?.last2Days ?? [];
+  if (!days.length) return '—';
+  return days.map((d) => `day ${d.growthDay}: ${fmtMinutes(d.total)}`).join(', ');
+}
+
+function climateText(house, html) {
+  return LIVE_COLUMNS.map((col) => `${col.label}: ${conditionsCell(house, col.key, html)}`).join(' | ');
+}
+
+function connectionHtml(house) {
+  return house.connectionStatus === 1
+    ? '<span style="color:#16a34a">Online</span>'
+    : '<span style="color:#dc2626">Offline</span>';
+}
+
+function worstSeverity(alerts) {
+  if ((alerts || []).some((a) => a.severity === 'critical')) return 'critical';
+  if ((alerts || []).some((a) => a.severity === 'warning')) return 'warning';
+  return 'info';
+}
+
+function partitionHouses(houses, alerts) {
+  const expanded = [];
+  const healthy = [];
+  for (const house of houses || []) {
+    const list = (alerts || []).filter((a) => a.houseNumber === house.houseNumber);
+    if (list.length) expanded.push({ house, alerts: list });
+    else healthy.push(house);
+  }
+  expanded.sort((a, b) => {
+    const rank = (SEVERITY_RANK[worstSeverity(a.alerts)] ?? 9) - (SEVERITY_RANK[worstSeverity(b.alerts)] ?? 9);
+    if (rank !== 0) return rank;
+    return (a.house.houseNumber ?? 0) - (b.house.houseNumber ?? 0);
+  });
+  healthy.sort((a, b) => (a.houseNumber ?? 0) - (b.houseNumber ?? 0));
+  return { expanded, healthy };
+}
+
+function collapsedRow(house) {
+  const slot = sameSlotFields(house);
+  const climate = LIVE_COLUMNS.map(
+    (col) =>
+      `<td style="padding:8px;border:1px solid #e5e7eb;text-align:center">${conditionsCell(house, col.key, true)}</td>`,
+  ).join('');
+  return `<tr>
+        <td style="padding:8px;border:1px solid #e5e7eb">${house.houseName}</td>
+        <td style="padding:8px;border:1px solid #e5e7eb;text-align:center">${fmtNum(house.growthDay)}</td>
+        <td style="padding:8px;border:1px solid #e5e7eb;text-align:right">${slot.soFarText}</td>
+        <td style="padding:8px;border:1px solid #e5e7eb;text-align:right">${slot.yesterdayText}</td>
+        <td style="padding:8px;border:1px solid #e5e7eb;text-align:right">${slot.deltaGalText}</td>
+        <td style="padding:8px;border:1px solid #e5e7eb;text-align:right">${slot.deltaPctText}</td>
+        <td style="padding:8px;border:1px solid #e5e7eb;text-align:right">${fullDayPctText(house)}</td>
+        ${climate}
+      </tr>`;
+}
+
+function collapsedLine(house) {
+  const slot = sameSlotFields(house);
+  return `${house.houseName} | day ${fmtNum(house.growthDay)} | water so far ${slot.soFarText} | yesterday this time ${slot.yesterdayText} | same-time ${slot.deltaGalText} gal (${slot.deltaPctText}) | full-day ${fullDayPctText(house)} | ${waterHistoryText(house)} | ${climateText(house, false)}`;
+}
+
+function expandedHouseHtml(entry) {
+  const house = entry.house;
+  const slot = sameSlotFields(house);
+  const reasons = entry.alerts
+    .map(
+      (a) =>
+        `<li style="margin-bottom:4px"><strong style="color:${severityColor(a.severity)}">[${a.severity.toUpperCase()}]</strong> ${stripHousePrefix(a.message, house.houseName, house.houseNumber)}</li>`,
+    )
+    .join('');
+  return `<section style="border:1px solid #fecaca;border-radius:8px;padding:12px 14px;margin:12px 0">
+      <h3 style="margin:0 0 8px">${house.houseName} · day ${fmtNum(house.growthDay)} · ${connectionHtml(house)}</h3>
+      <ul style="margin:0 0 8px;padding-left:18px">${reasons}</ul>
+      <p style="margin:4px 0">Water so far <strong>${slot.soFarText}</strong> gal · yesterday this time <strong>${slot.yesterdayText}</strong> · ${slot.deltaGalText} gal (${slot.deltaPctText})</p>
+      <p style="margin:4px 0">Full-day Δ% <strong>${fullDayPctText(house)}</strong> · last 3 flock days: ${waterHistoryText(house)}</p>
+      <p style="margin:4px 0">Heater runtime: ${heaterHistoryText(house)} · 2-day total ${fmtMinutes(house.heaters?.last2DaysTotalMinutes)}</p>
+      <p style="margin:4px 0">${climateText(house, true)}</p>
+    </section>`;
+}
+
+function expandedHouseText(entry) {
+  const house = entry.house;
+  const slot = sameSlotFields(house);
+  const lines = [`  ${house.houseName} (#${house.houseNumber}) [expanded] day ${fmtNum(house.growthDay)}`];
+  for (const alert of entry.alerts) {
+    lines.push(`    [${alert.severity.toUpperCase()}] ${stripHousePrefix(alert.message, house.houseName, house.houseNumber)}`);
+  }
+  lines.push(
+    `    water so far ${slot.soFarText} | yesterday this time ${slot.yesterdayText} | same-time ${slot.deltaGalText} gal (${slot.deltaPctText}) | full-day ${fullDayPctText(house)} | ${waterHistoryText(house)}`,
+  );
+  lines.push(
+    `    heater ${heaterHistoryText(house)} | 2-day total ${fmtMinutes(house.heaters?.last2DaysTotalMinutes)}`,
+  );
+  lines.push(`    ${climateText(house, false)}`);
+  return lines.join('\n');
+}
+
+function failureTextFrom(item, itemError) {
+  const chunks = [];
+  const add = (value) => {
+    if (value == null || value === '' || typeof value === 'boolean' || typeof value === 'number') return;
+    if (typeof value === 'string') {
+      chunks.push(value);
+      return;
+    }
+    if (typeof value === 'object') {
+      if (value.message) chunks.push(String(value.message));
+      if (value.description && value.description !== value.message) chunks.push(String(value.description));
+    }
+  };
+  add(item && item.message);
+  add(item && item.error);
+  add(itemError);
+  const text = chunks.map((part) => String(part).trim()).filter(Boolean).join('\n');
+  return text || 'Unknown error';
+}
+
+function isRunnerTimeout(text) {
+  const s = String(text || '');
+  if (/Request timeout after \d+ms/i.test(s)) return false;
+  return /task runner|task execution timed out|timeout of \d+ms exceeded|ECONNABORTED|connection timed out|execution timed out|N8N_RUNNERS_TASK_TIMEOUT/i.test(
+    s,
+  );
+}
+
+function classifyFailure(text) {
+  const s = String(text || '');
+  if (/ConnectionToken/i.test(s)) {
+    return { code: 'no_connection_token', label: 'No ConnectionToken' };
+  }
+  if (/gateway disconnected/i.test(s) || /GATEWAY_DISCONNECTED/.test(s)) {
+    return { code: 'gateway_disconnected', label: 'Gateway disconnected' };
+  }
+  if (isRunnerTimeout(s)) {
+    return { code: 'runner_timeout', label: 'Runner timeout' };
+  }
+  const line = s.split('\n').map((part) => part.trim()).find(Boolean) || 'Unknown error';
+  const label = line.length > 80 ? `${line.slice(0, 77)}...` : line;
+  return { code: 'other', label };
+}
+
+function buildFailureEmail({ item, itemError, farm, config, stamp } = {}) {
+  const source = item || {};
+  const farmLabel =
+    source.farmName || farm?.displayName || source.farmId || farm?.id || 'unknown farm';
+  const to = (config && config.recipientEmail) || 'you@example.com';
+  const from = (config && config.senderEmail) || to;
+  const detail = failureTextFrom(source, itemError);
+  const cause = classifyFailure(detail);
+  const imageStamp = (stamp && String(stamp).trim()) || source.libStamp || 'IMAGE_STAMP missing';
+  const subject = `[RotemNet] ${cause.label} — ${farmLabel}`;
+  const html = `<!DOCTYPE html>
+<html>
+<body style="font-family:Arial,sans-serif;color:#111827">
+  <h2>${escapeHtml(cause.label)}</h2>
+  <p><strong>Farm:</strong> ${escapeHtml(farmLabel)}</p>
+  <p><strong>Cause:</strong> ${escapeHtml(cause.label)}</p>
+  <p><strong>Image stamp:</strong> ${escapeHtml(imageStamp)}</p>
+  <pre style="background:#fef2f2;padding:12px;border-radius:6px;white-space:pre-wrap">${escapeHtml(detail)}</pre>
+</body>
+</html>`;
+  const text = [
+    cause.label,
+    `Farm: ${farmLabel}`,
+    `Cause: ${cause.label}`,
+    `Image stamp: ${imageStamp}`,
+    '',
+    detail,
+  ].join('\n');
+  return {
+    to,
+    from,
+    subject,
+    html,
+    text,
+    cause: cause.label,
+    causeCode: cause.code,
+    imageStamp,
+    causeDetail: detail,
+  };
+}
+
 function buildEmail(report, recipientEmail, reportPeriod) {
   const farmName = report.farmDisplayName || report.farmName || report.farmId;
   const dateStr = new Date().toLocaleDateString('en-US', {
@@ -161,86 +368,7 @@ function buildEmail(report, recipientEmail, reportPeriod) {
   const connected = (report.houses || []).filter((h) => h.connectionStatus === 1).length;
   const total = (report.houses || []).length;
 
-  const wHeaders = waterDayHeaders(report.houses);
-  const hHeaders = heaterDayHeaders(report.houses);
-
-  const waterDetailRows = (report.houses || [])
-    .map((h) => {
-      const days = h.water?.last3Days ?? [];
-      const cells = days.length
-        ? days.map((d) => `<td style="padding:8px;border:1px solid #e5e7eb;text-align:right">${fmtNum(d.total)}</td>`)
-        : wHeaders.map(() => '<td style="padding:8px;border:1px solid #e5e7eb;text-align:right">—</td>');
-      const status =
-        h.connectionStatus === 1
-          ? '<span style="color:#16a34a">Online</span>'
-          : '<span style="color:#dc2626">Offline</span>';
-      return `<tr>
-        <td style="padding:8px;border:1px solid #e5e7eb">${h.houseName}</td>
-        <td style="padding:8px;border:1px solid #e5e7eb;text-align:center">${fmtNum(h.growthDay)}</td>
-        <td style="padding:8px;border:1px solid #e5e7eb;text-align:center">${status}</td>
-        ${cells.join('')}
-      </tr>`;
-    })
-    .join('');
-
-  const heaterDetailRows = (report.houses || [])
-    .map((h) => {
-      const days = h.heaters?.last2Days ?? [];
-      const cells = days.length
-        ? days.map(
-            (d) =>
-              `<td style="padding:8px;border:1px solid #e5e7eb;text-align:right">${fmtMinutes(d.total)}</td>`,
-          )
-        : hHeaders.map(() => '<td style="padding:8px;border:1px solid #e5e7eb;text-align:right">—</td>');
-      const status =
-        h.connectionStatus === 1
-          ? '<span style="color:#16a34a">Online</span>'
-          : '<span style="color:#dc2626">Offline</span>';
-      return `<tr>
-        <td style="padding:8px;border:1px solid #e5e7eb">${h.houseName}</td>
-        <td style="padding:8px;border:1px solid #e5e7eb;text-align:center">${fmtNum(h.growthDay)}</td>
-        <td style="padding:8px;border:1px solid #e5e7eb;text-align:center">${status}</td>
-        ${cells.join('')}
-        <td style="padding:8px;border:1px solid #e5e7eb;text-align:right;font-weight:600">${fmtMinutes(h.heaters?.last2DaysTotalMinutes)}</td>
-      </tr>`;
-    })
-    .join('');
-
-  const summaryRows = (report.houses || [])
-    .map((h) => {
-      const status =
-        h.connectionStatus === 1
-          ? '<span style="color:#16a34a">Online</span>'
-          : '<span style="color:#dc2626">Offline</span>';
-      return `<tr>
-        <td style="padding:8px;border:1px solid #e5e7eb">${h.houseName}</td>
-        <td style="padding:8px;border:1px solid #e5e7eb;text-align:center">${fmtNum(h.growthDay)}</td>
-        <td style="padding:8px;border:1px solid #e5e7eb;text-align:center">${status}</td>
-        <td style="padding:8px;border:1px solid #e5e7eb;text-align:right">${fmtNum(h.water?.todayTotal)}</td>
-        <td style="padding:8px;border:1px solid #e5e7eb;text-align:right">${fmtNum(h.water?.yesterdayTotal)}</td>
-        <td style="padding:8px;border:1px solid #e5e7eb;text-align:right">${fmtPct(completedWaterChange(h)?.pct)}</td>
-        <td style="padding:8px;border:1px solid #e5e7eb;text-align:right">${fmtMinutes(h.heaters?.todayTotalMinutes)}</td>
-        <td style="padding:8px;border:1px solid #e5e7eb;text-align:right">${fmtMinutes(h.heaters?.yesterdayTotalMinutes)}</td>
-        <td style="padding:8px;border:1px solid #e5e7eb;text-align:right">${fmtPct(h.heaters?.pctChange)}</td>
-      </tr>`;
-    })
-    .join('');
-
-  const liveRows = (report.houses || [])
-    .map((h) => {
-      const cells = LIVE_COLUMNS
-        .map(
-          (col) =>
-            `<td style="padding:8px;border:1px solid #e5e7eb;text-align:center">${conditionsCell(h, col.key, true)}</td>`,
-        )
-        .join('');
-      return `<tr>
-        <td style="padding:8px;border:1px solid #e5e7eb">${h.houseName}</td>
-        ${cells}
-      </tr>`;
-    })
-    .join('');
-
+  const { expanded, healthy } = partitionHouses(report.houses, report.alerts);
   const groupedAlerts = groupAlertsByHouse(report.alerts || []);
   const alertsHtml =
     groupedAlerts.length === 0
@@ -266,65 +394,31 @@ function buildEmail(report, recipientEmail, reportPeriod) {
   <h2 style="margin-top:24px">Alerts (${report.alertCount ?? 0})</h2>
   ${alertsHtml}
 
-  <h2 style="margin-top:28px">Live conditions</h2>
-  <p style="color:#6b7280;font-size:13px;margin-top:0">Current controller readings. Temperature is average / set point / outside.</p>
+  <h2 style="margin-top:28px">Needs attention</h2>
+  ${
+    expanded.length
+      ? expanded.map((entry) => expandedHouseHtml(entry)).join('')
+      : '<p style="color:#16a34a">No house alerts. Every house is one line below.</p>'
+  }
+
+  <h2 style="margin-top:28px">Other houses</h2>
+  <p style="color:#6b7280;font-size:13px;margin-top:0">Live conditions and water on one line. Growth day, water so far, yesterday at this time, and full-day change.</p>
   <table style="border-collapse:collapse;width:100%;font-size:13px;margin-top:8px">
     <thead>
       <tr style="background:#f0fdf4">
         <th style="padding:8px;border:1px solid #e5e7eb;text-align:left">House</th>
+        <th style="padding:8px;border:1px solid #e5e7eb">Day</th>
+        <th style="padding:8px;border:1px solid #e5e7eb">Water so far</th>
+        <th style="padding:8px;border:1px solid #e5e7eb">Yesterday this time</th>
+        <th style="padding:8px;border:1px solid #e5e7eb">Δ gal</th>
+        <th style="padding:8px;border:1px solid #e5e7eb">Δ %</th>
+        <th style="padding:8px;border:1px solid #e5e7eb">Full-day Δ%</th>
         ${LIVE_COLUMNS.map((col) => `<th style="padding:8px;border:1px solid #e5e7eb">${col.label}</th>`).join('')}
       </tr>
     </thead>
-    <tbody>${liveRows}</tbody>
+    <tbody>${healthy.length ? healthy.map((house) => collapsedRow(house)).join('') : '<tr><td colspan="11" style="padding:8px;border:1px solid #e5e7eb;color:#6b7280">None</td></tr>'}</tbody>
   </table>
-
-  <h2 style="margin-top:28px">Water — Last 3 Flock Days</h2>
-  <p style="color:#6b7280;font-size:13px;margin-top:0">Daily water total per house (Rotem history, by flock day).</p>
-  <table style="border-collapse:collapse;width:100%;font-size:14px;margin-top:8px">
-    <thead>
-      <tr style="background:#eff6ff">
-        <th style="padding:8px;border:1px solid #e5e7eb;text-align:left">House</th>
-        <th style="padding:8px;border:1px solid #e5e7eb">Current day</th>
-        <th style="padding:8px;border:1px solid #e5e7eb">Status</th>
-        ${wHeaders.map((h) => `<th style="padding:8px;border:1px solid #e5e7eb">${h}</th>`).join('')}
-      </tr>
-    </thead>
-    <tbody>${waterDetailRows}</tbody>
-  </table>
-
-  <h2 style="margin-top:28px">Heater Runtime — Last 2 Flock Days</h2>
-  <p style="color:#6b7280;font-size:13px;margin-top:0">Per-day heater runtime and 2-day total per house.</p>
-  <table style="border-collapse:collapse;width:100%;font-size:14px;margin-top:8px">
-    <thead>
-      <tr style="background:#fff7ed">
-        <th style="padding:8px;border:1px solid #e5e7eb;text-align:left">House</th>
-        <th style="padding:8px;border:1px solid #e5e7eb">Current day</th>
-        <th style="padding:8px;border:1px solid #e5e7eb">Status</th>
-        ${hHeaders.map((h) => `<th style="padding:8px;border:1px solid #e5e7eb">${h}</th>`).join('')}
-        <th style="padding:8px;border:1px solid #e5e7eb">2-day total</th>
-      </tr>
-    </thead>
-    <tbody>${heaterDetailRows}</tbody>
-  </table>
-
-  <h2 style="margin-top:28px">Day-over-Day Summary</h2>
-  <table style="border-collapse:collapse;width:100%;font-size:14px;margin-top:8px">
-    <thead>
-      <tr style="background:#f3f4f6">
-        <th style="padding:8px;border:1px solid #e5e7eb;text-align:left">House</th>
-        <th style="padding:8px;border:1px solid #e5e7eb">Day</th>
-        <th style="padding:8px;border:1px solid #e5e7eb">Status</th>
-        <th style="padding:8px;border:1px solid #e5e7eb">Water today</th>
-        <th style="padding:8px;border:1px solid #e5e7eb">Last full day</th>
-        <th style="padding:8px;border:1px solid #e5e7eb">Full-day Δ%</th>
-        <th style="padding:8px;border:1px solid #e5e7eb">Heater today</th>
-        <th style="padding:8px;border:1px solid #e5e7eb">Heater yday</th>
-        <th style="padding:8px;border:1px solid #e5e7eb">Heater Δ%</th>
-      </tr>
-    </thead>
-    <tbody>${summaryRows}</tbody>
-  </table>
-  <p style="color:#6b7280;font-size:12px;margin-top:8px">Water today is still in progress. Full-day Δ% compares the last completed flock day with the day before it.</p>
+  <p style="color:#6b7280;font-size:12px;margin-top:8px">Water so far is this run’s in-progress total. Yesterday this time is the same 6 AM or 6 PM snapshot from about 24 hours earlier. If that snapshot is missing, today’s number stays and the compare is left blank. Full-day Δ% compares the last two completed flock days. An unfinished day at zero is not an alert.</p>
   <p style="color:#9ca3af;font-size:12px;margin-top:32px">Generated by n8n Poultry RotemNet workflow · ${report.reportTime}</p>
 </body>
 </html>`;
@@ -347,35 +441,18 @@ function buildEmail(report, recipientEmail, reportPeriod) {
     }
   }
 
-  textLines.push('', 'Live conditions:');
-  for (const h of report.houses || []) {
-    const bits = LIVE_COLUMNS.map((col) => `${col.label}: ${conditionsCell(h, col.key, false)}`);
-    textLines.push(`  ${h.houseName}: ${bits.join(' | ')}`);
+  textLines.push('', 'Needs attention:');
+  if (expanded.length === 0) {
+    textLines.push('  None.');
+  } else {
+    for (const entry of expanded) textLines.push(expandedHouseText(entry));
   }
 
-  textLines.push('', 'Water — Last 3 flock days:');
-  for (const h of report.houses || []) {
-    const days = (h.water?.last3Days ?? [])
-      .map((d) => `day ${d.growthDay}: ${fmtNum(d.total)}`)
-      .join(', ');
-    textLines.push(`  ${h.houseName}: ${days || '—'}`);
-  }
-
-  textLines.push('', 'Heater — Last 2 flock days (total):');
-  for (const h of report.houses || []) {
-    const days = (h.heaters?.last2Days ?? [])
-      .map((d) => `day ${d.growthDay}: ${fmtMinutes(d.total)}`)
-      .join(', ');
-    textLines.push(
-      `  ${h.houseName}: ${days || '—'} | 2-day total: ${fmtMinutes(h.heaters?.last2DaysTotalMinutes)}`,
-    );
-  }
-
-  textLines.push('', 'Day-over-day summary:');
-  for (const h of report.houses || []) {
-    textLines.push(
-      `  ${h.houseName} | water today ${h.water?.todayTotal} (in progress) | last full day ${h.water?.yesterdayTotal} (${fmtPct(completedWaterChange(h)?.pct)} vs day before) | heater ${fmtMinutes(h.heaters?.todayTotalMinutes)} vs yday ${fmtMinutes(h.heaters?.yesterdayTotalMinutes)} (${fmtPct(h.heaters?.pctChange)})`,
-    );
+  textLines.push('', 'Other houses:');
+  if (healthy.length === 0) {
+    textLines.push('  None.');
+  } else {
+    for (const house of healthy) textLines.push(`  ${collapsedLine(house)}`);
   }
 
   return {
@@ -390,4 +467,9 @@ function buildEmail(report, recipientEmail, reportPeriod) {
   };
 }
 
-module.exports = { buildEmail, groupAlertsByHouse };
+module.exports = {
+  buildEmail,
+  buildFailureEmail,
+  classifyFailure,
+  groupAlertsByHouse,
+};

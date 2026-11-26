@@ -17,6 +17,7 @@ process.env.ROTEM_SKIP_FETCH = '1';
 
 const orchestrator = require(path.join(ROOT, 'lib', 'orchestrator'));
 const compareAnomaly = require(path.join(ROOT, 'lib', 'compare-anomaly'));
+const { buildFailureEmail } = require(path.join(ROOT, 'lib', 'email-builder'));
 const {
   parseLiveHouseData,
   parseWaterHistoryRows,
@@ -83,6 +84,75 @@ const mockReport = {
   ],
 };
 
+function assertFailureEmails() {
+  const cases = [
+    ['timeout of 1200000ms exceeded', 'Runner timeout'],
+    ['Task execution timed out', 'Runner timeout'],
+    ['RotemNet ConnectToGateway returned no ConnectionToken', 'No ConnectionToken'],
+    ['RotemNet ConnectToGateway succeeded but ConnectionToken is missing', 'No ConnectionToken'],
+    [
+      'RotemNet login succeeded but farm connection is missing (ConnectionToken/GatewayName). Retry or set rotemGatewayCode in farms.json',
+      'No ConnectionToken',
+    ],
+    [
+      'RotemNet ConnectToGateway failed: gateway disconnected from cloud or still connecting — retry shortly',
+      'Gateway disconnected',
+    ],
+  ];
+  for (const [message, label] of cases) {
+    const email = buildFailureEmail({
+      item: { message, farmName: 'Bobby Angel Farm', farmId: 'bobby-angel' },
+      config: { recipientEmail: 'a@example.com', senderEmail: 'a@example.com' },
+      stamp: 'builtAt=2026-11-25T03:02:42Z | lib=abc',
+    });
+    if (!email.subject.startsWith(`[RotemNet] ${label} — Bobby Angel Farm`)) {
+      throw new Error(`subject for ${label}: ${email.subject}`);
+    }
+    if (email.subject.includes('[RotemNet] Error')) {
+      throw new Error(`generic error subject for ${message}`);
+    }
+    if (!email.html.includes('Image stamp') || !email.html.includes('builtAt=2026-11-25T03:02:42Z')) {
+      throw new Error(`stamp missing for ${label}`);
+    }
+    if (!email.text.includes('Image stamp: builtAt=2026-11-25T03:02:42Z | lib=abc')) {
+      throw new Error(`text stamp missing for ${label}`);
+    }
+  }
+
+  const fromNode = buildFailureEmail({
+    item: { error: { message: 'timeout of 1200000ms exceeded' }, farmId: 'bobby-angel' },
+    farm: { id: 'bobby-angel', displayName: 'Bobby Angel Farm' },
+    config: { recipientEmail: 'a@example.com' },
+    stamp: 'stamp-from-http-node',
+  });
+  if (!fromNode.subject.startsWith('[RotemNet] Runner timeout — Bobby Angel Farm')) {
+    throw new Error(`http-node timeout subject: ${fromNode.subject}`);
+  }
+  if (!fromNode.html.includes('stamp-from-http-node')) {
+    throw new Error('http-node error dropped the image stamp');
+  }
+
+  const rotelTimeout = buildFailureEmail({
+    item: { error: true, message: 'Request timeout after 120000ms', farmName: 'Bobby Angel Farm' },
+    config: { recipientEmail: 'a@example.com' },
+    stamp: 'stamp-rotem-http',
+  });
+  if (rotelTimeout.cause === 'Runner timeout' || rotelTimeout.subject.includes('[RotemNet] Error —')) {
+    throw new Error(`Rotem request timeout classified wrong: ${rotelTimeout.subject}`);
+  }
+  if (!rotelTimeout.html.includes('stamp-rotem-http')) {
+    throw new Error('Rotem request timeout dropped the image stamp');
+  }
+
+  const missingStamp = buildFailureEmail({
+    item: { message: 'timeout of 1200000ms exceeded', farmName: 'Bobby Angel Farm' },
+    config: { recipientEmail: 'a@example.com' },
+  });
+  if (!missingStamp.html.includes('IMAGE_STAMP missing') || !missingStamp.text.includes('IMAGE_STAMP missing')) {
+    throw new Error('missing image stamp should be named');
+  }
+}
+
 function assertIncludes(haystack, needle, label) {
   if (!haystack.includes(needle)) {
     throw new Error(`${label} missing ${JSON.stringify(needle)}`);
@@ -122,7 +192,7 @@ function assertParsers() {
   if (live.growthDay !== 21 || live.dailyWater !== 989) {
     throw new Error(`live totals parsed wrong: ${JSON.stringify(live)}`);
   }
-  const kept = ['averageTemperature', 'setTemperature', 'outsideTemperature', 'temperatureUnit', 'insideHumidity', 'staticPressure', 'pressureUnit', 'ventLevel'];
+  const kept = ['averageTemperature', 'setTemperature', 'outsideTemperature', 'temperatureUnit', 'insideHumidity', 'staticPressure', 'pressureUnit', 'targetPressure', 'ventLevel'];
   const extra = Object.keys(live.conditions).filter((key) => !kept.includes(key));
   if (extra.length) {
     throw new Error(`live conditions has extra fields: ${extra.join(', ')}`);
@@ -132,6 +202,9 @@ function assertParsers() {
   }
   if (live.conditions.insideHumidity !== 64 || live.conditions.staticPressure !== 24 || live.conditions.pressureUnit !== 'Pa') {
     throw new Error(`humidity or pressure parsed wrong: ${JSON.stringify(live.conditions)}`);
+  }
+  if (live.conditions.targetPressure !== 24.9) {
+    throw new Error(`target pressure not parsed from command 0: ${JSON.stringify(live.conditions)}`);
   }
   if (live.conditions.ventLevel !== 17) {
     throw new Error('vent level not parsed');
@@ -310,8 +383,74 @@ async function main() {
     ]) {
       assertIncludes(text, needle, 'text');
     }
-    if (!compareAnomaly.completedWaterChange) {
+    if (!compareAnomaly.completedWaterChange || !compareAnomaly.loadSameSlotSnapshot) {
       throw new Error('compare-anomaly export missing');
+    }
+    assertIncludes(text, 'House 1 | day 21', 'collapsed house');
+    assertIncludes(text, 'yesterday this time —', 'missing same-slot compare');
+    assertIncludes(html, 'Needs attention', 'expanded section');
+    assertIncludes(html, 'Live conditions', 'live conditions heading');
+    if (html.includes('+80%')) {
+      throw new Error('same-slot percent appeared before a 24h snapshot existed');
+    }
+    if ((second.report.alerts || []).some((a) => a.houseNumber === 1)) {
+      throw new Error(`healthy house should stay collapsed, alerts: ${second.report.alerts.map((a) => a.message).join(' | ')}`);
+    }
+
+    assertFailureEmails();
+
+    console.log('4. Same-slot water from the prior run...');
+    const period = compareAnomaly.getReportPeriod(farm.timezone);
+    const savedAt = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const historyDir = path.join(DATA_ROOT, 'history', 'farm-test');
+    fs.mkdirSync(historyDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(historyDir, `${savedAt.slice(0, 10)}-${period}.json`),
+      JSON.stringify(
+        {
+          savedAt,
+          reportPeriod: period,
+          farmId: 'farm-test',
+          houses: [
+            {
+              houseNumber: 1,
+              houseName: 'House 1',
+              growthDay: 21,
+              waterTodayTotal: 1000,
+              heaterTodayMinutes: 400,
+            },
+          ],
+        },
+        null,
+        2,
+      ),
+    );
+    const third = await orchestrator.processFarm(farm, config, thresholds, {
+      skipScheduleCheck: true,
+      mockReport: {
+        ...mockReport,
+        houses: mockReport.houses.map((h) =>
+          h.houseNumber === 1
+            ? {
+                ...h,
+                water: { ...h.water, todayTotal: 1800, pctChange: 20 },
+                heaters: { ...h.heaters, todayTotalMinutes: 650, pctChange: 30 },
+              }
+            : h,
+        ),
+      },
+    });
+    assertIncludes(third.email.html, '1,000', 'yesterday same slot');
+    assertIncludes(third.email.html, '+800', 'same-slot gallons');
+    assertIncludes(third.email.html, '+80%', 'same-slot percent');
+    assertIncludes(third.email.html, '+9.1%', 'full-day change');
+    assertIncludes(third.email.text, 'water so far 1,800', 'water so far');
+    assertIncludes(third.email.text, 'yesterday this time 1,000', 'yesterday same slot text');
+    assertIncludes(third.email.text, 'same-time +800 gal (+80%)', 'same-slot difference');
+    assertIncludes(third.email.text, 'House 2 (#2) [expanded]', 'alert house stays expanded');
+    assertIncludes(third.email.text, 'yesterday this time —', 'house without snapshot stays blank');
+    if ((third.report.alerts || []).some((a) => /zero water/i.test(a.message))) {
+      throw new Error('unfinished water must not raise a zero-water alert');
     }
 
     const historyFile = path.join(DATA_ROOT, 'history', 'farm-test', 'latest.json');

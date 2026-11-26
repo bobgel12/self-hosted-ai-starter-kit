@@ -318,6 +318,212 @@ function main() {
     'disconnected house should only emit connection alert',
   );
 
+  const disconnectedClimate = detectAnomalies(
+    {
+      houses: [
+        {
+          houseNumber: 9,
+          houseName: 'House 9',
+          growthDay: 10,
+          connectionStatus: 0,
+          conditions: {
+            averageTemperature: 40,
+            setTemperature: 20,
+            insideHumidity: 99,
+            staticPressure: 80,
+            targetPressure: 20,
+            pressureUnit: 'Pa',
+          },
+          water: { todayTotal: 0, yesterdayTotal: 0, pctChange: null, last3Days: [] },
+          heaters: { todayTotalMinutes: 0, yesterdayTotalMinutes: 0, pctChange: null, last2Days: [] },
+        },
+      ],
+    },
+    thresholds,
+  );
+  assert(
+    disconnectedClimate.alerts.length === 1 && disconnectedClimate.alerts[0].metric === 'connection',
+    'disconnected house should not also raise climate alerts',
+  );
+
+  const unfinishedZero = detectAnomalies(
+    {
+      houses: [
+        {
+          ...house({
+            n: 4,
+            day: 16,
+            waterToday: 0,
+            waterYday: 1296,
+            waterPct: -100,
+            waterLast3: days([
+              [14, 1200],
+              [15, 1296],
+              [16, 0],
+            ]),
+            heaterToday: 0,
+            heaterYday: 0,
+            heaterPct: 0,
+            heaterLast2: days([
+              [15, 0],
+              [16, 0],
+            ]),
+          }),
+          sameSlot: {
+            hasPrevious: true,
+            waterSoFar: 0,
+            yesterdayWater: 800,
+            deltaGallons: -800,
+            deltaPct: -100,
+          },
+        },
+      ],
+    },
+    thresholds,
+  );
+  assert(
+    unfinishedZero.alertCount === 0,
+    `unfinished day at zero must not alert, got ${unfinishedZero.alerts.map((a) => a.message).join(' | ')}`,
+  );
+
+  const finishedZero = detectAnomalies(
+    {
+      houses: [
+        house({
+          n: 4,
+          day: 16,
+          waterToday: 40,
+          waterYday: 0,
+          waterPct: null,
+          waterLast3: days([
+            [14, 1200],
+            [15, 0],
+            [16, 40],
+          ]),
+          heaterToday: 0,
+          heaterYday: 0,
+          heaterPct: 0,
+          heaterLast2: days([
+            [15, 0],
+            [16, 0],
+          ]),
+        }),
+      ],
+    },
+    thresholds,
+  );
+  assert(
+    finishedZero.alerts.some((a) => a.metric === 'water' && a.message.includes('completed growth day 15')),
+    'a finished day at zero should still alert',
+  );
+
+  function climateHouse(conditions) {
+    return {
+      ...house({
+        n: 1,
+        day: 20,
+        waterToday: 1500,
+        waterYday: 1400,
+        waterPct: 7,
+        waterLast3: days([
+          [18, 1300],
+          [19, 1400],
+          [20, 1500],
+        ]),
+        heaterToday: 0,
+        heaterYday: 0,
+        heaterPct: 0,
+        heaterLast2: days([
+          [19, 0],
+          [20, 0],
+        ]),
+      }),
+      conditions,
+    };
+  }
+
+  const hot = detectAnomalies(
+    {
+      houses: [
+        climateHouse({
+          averageTemperature: 32,
+          setTemperature: 27,
+          temperatureUnit: 'C°',
+          insideHumidity: 60,
+          staticPressure: 24,
+          targetPressure: 25,
+          pressureUnit: 'Pa',
+        }),
+      ],
+    },
+    thresholds,
+  );
+  assert(
+    hot.alerts.length === 1 && hot.alerts[0].metric === 'temperature',
+    `expected only a temperature alert, got ${hot.alerts.map((a) => a.message).join(' | ')}`,
+  );
+
+  const humid = detectAnomalies(
+    {
+      houses: [
+        climateHouse({
+          averageTemperature: 27.2,
+          setTemperature: 27,
+          temperatureUnit: 'C°',
+          insideHumidity: 92,
+          staticPressure: 24,
+          targetPressure: 25,
+          pressureUnit: 'Pa',
+        }),
+      ],
+    },
+    thresholds,
+  );
+  assert(
+    humid.alerts.length === 1 && humid.alerts[0].metric === 'humidity',
+    `expected only a humidity alert, got ${humid.alerts.map((a) => a.message).join(' | ')}`,
+  );
+
+  const pressure = detectAnomalies(
+    {
+      houses: [
+        climateHouse({
+          averageTemperature: 27.2,
+          setTemperature: 27,
+          temperatureUnit: 'C°',
+          insideHumidity: 64,
+          staticPressure: 40,
+          targetPressure: 25,
+          pressureUnit: 'Pa',
+        }),
+      ],
+    },
+    thresholds,
+  );
+  assert(
+    pressure.alerts.length === 1 && pressure.alerts[0].metric === 'static_pressure',
+    `expected only a pressure alert, got ${pressure.alerts.map((a) => a.message).join(' | ')}`,
+  );
+
+  const comfortable = detectAnomalies(
+    {
+      houses: [
+        climateHouse({
+          averageTemperature: 29.7,
+          setTemperature: 27.7,
+          temperatureUnit: 'C°',
+          insideHumidity: 64,
+          staticPressure: 24,
+          targetPressure: 24.9,
+          pressureUnit: 'Pa',
+          ventLevel: 17,
+        }),
+      ],
+    },
+    thresholds,
+  );
+  assert(comfortable.alertCount === 0, `in-range climate should not alert, got ${comfortable.alertCount}`);
+
   console.log('\nReplay passed.');
 }
 
