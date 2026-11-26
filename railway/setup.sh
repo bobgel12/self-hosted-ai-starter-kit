@@ -12,6 +12,8 @@
 #   1. Railway → project Settings → Tokens → create Project Token (production)
 #   2. GitHub repo → Settings → Secrets → Actions → RAILWAY_TOKEN=<token>
 #   3. Workflow: .github/workflows/deploy-railway.yml
+#      It writes the build/deploy settings in .railway/railway.ts onto the
+#      service before upload. railway.toml is not used.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -36,6 +38,11 @@ echo "Logged in as: $(railway whoami)"
 if [ ! -f .railway/project.json ]; then
   echo "Creating project ${PROJECT_NAME}..."
   railway init -n "$PROJECT_NAME" -w "$WORKSPACE_ID"
+fi
+
+echo "Saving build settings if ${SERVICE_NAME} already exists..."
+if ! RAILWAY_SERVICE="$SERVICE_NAME" bash railway/persist-service-config.sh; then
+  echo "Could not save service settings yet. The final redeploy saves them after the service exists."
 fi
 
 echo "Deploying n8n service (creates service if new)..."
@@ -92,6 +99,9 @@ railway volume list 2>/dev/null | grep -q /data/shared || railway volume add --m
 
 echo "Ensuring public domain..."
 railway domain 2>/dev/null || true
+
+echo "Saving Dockerfile builder, healthcheck, and restart policy..."
+RAILWAY_SERVICE="$SERVICE_NAME" bash railway/persist-service-config.sh
 
 echo "Redeploying with final config..."
 railway redeploy --yes 2>/dev/null || railway up --detach -m "Redeploy with postgres and volume"
