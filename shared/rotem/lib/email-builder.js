@@ -175,6 +175,107 @@ function climateText(house, html) {
   return LIVE_COLUMNS.map((col) => `${col.label}: ${conditionsCell(house, col.key, html)}`).join(' | ');
 }
 
+function waterDayHeaders(houses) {
+  const sample = (houses || []).find((h) => h.water?.last3Days?.length)?.water.last3Days;
+  if (!sample?.length) return ['Day −2', 'Day −1', 'Today'];
+  return sample.map((d) => `Day ${d.growthDay}`);
+}
+
+function heaterDayHeaders(houses) {
+  const sample = (houses || []).find((h) => h.heaters?.last2Days?.length)?.heaters.last2Days;
+  if (!sample?.length) return ['Prior day', 'Latest day'];
+  return sample.map((d) => `Day ${d.growthDay}`);
+}
+
+function emptyCells(count) {
+  return Array.from(
+    { length: count },
+    () => '<td style="padding:8px;border:1px solid #e5e7eb;text-align:right">—</td>',
+  ).join('');
+}
+
+function waterDetailRows(houses, headers) {
+  return (houses || [])
+    .map((house) => {
+      const days = house.water?.last3Days ?? [];
+      const cells = days.length
+        ? days
+            .map(
+              (d) =>
+                `<td style="padding:8px;border:1px solid #e5e7eb;text-align:right">${fmtNum(d.total)}</td>`,
+            )
+            .join('')
+        : emptyCells(headers.length);
+      return `<tr>
+        <td style="padding:8px;border:1px solid #e5e7eb">${house.houseName}</td>
+        <td style="padding:8px;border:1px solid #e5e7eb;text-align:center">${fmtNum(house.growthDay)}</td>
+        <td style="padding:8px;border:1px solid #e5e7eb;text-align:center">${connectionHtml(house)}</td>
+        ${cells}
+      </tr>`;
+    })
+    .join('');
+}
+
+function heaterDetailRows(houses, headers) {
+  return (houses || [])
+    .map((house) => {
+      const days = house.heaters?.last2Days ?? [];
+      const cells = days.length
+        ? days
+            .map(
+              (d) =>
+                `<td style="padding:8px;border:1px solid #e5e7eb;text-align:right">${fmtMinutes(d.total)}</td>`,
+            )
+            .join('')
+        : emptyCells(headers.length);
+      return `<tr>
+        <td style="padding:8px;border:1px solid #e5e7eb">${house.houseName}</td>
+        <td style="padding:8px;border:1px solid #e5e7eb;text-align:center">${fmtNum(house.growthDay)}</td>
+        <td style="padding:8px;border:1px solid #e5e7eb;text-align:center">${connectionHtml(house)}</td>
+        ${cells}
+        <td style="padding:8px;border:1px solid #e5e7eb;text-align:right;font-weight:600">${fmtMinutes(house.heaters?.last2DaysTotalMinutes)}</td>
+      </tr>`;
+    })
+    .join('');
+}
+
+function summaryRows(houses) {
+  return (houses || [])
+    .map((house) => {
+      const slot = sameSlotFields(house);
+      return `<tr>
+        <td style="padding:8px;border:1px solid #e5e7eb">${house.houseName}</td>
+        <td style="padding:8px;border:1px solid #e5e7eb;text-align:center">${fmtNum(house.growthDay)}</td>
+        <td style="padding:8px;border:1px solid #e5e7eb;text-align:center">${connectionHtml(house)}</td>
+        <td style="padding:8px;border:1px solid #e5e7eb;text-align:right">${slot.soFarText}</td>
+        <td style="padding:8px;border:1px solid #e5e7eb;text-align:right">${slot.yesterdayText}</td>
+        <td style="padding:8px;border:1px solid #e5e7eb;text-align:right">${slot.deltaGalText}</td>
+        <td style="padding:8px;border:1px solid #e5e7eb;text-align:right">${slot.deltaPctText}</td>
+        <td style="padding:8px;border:1px solid #e5e7eb;text-align:right">${fmtNum(house.water?.yesterdayTotal)}</td>
+        <td style="padding:8px;border:1px solid #e5e7eb;text-align:right">${fullDayPctText(house)}</td>
+        <td style="padding:8px;border:1px solid #e5e7eb;text-align:right">${fmtMinutes(house.heaters?.todayTotalMinutes)}</td>
+        <td style="padding:8px;border:1px solid #e5e7eb;text-align:right">${fmtMinutes(house.heaters?.yesterdayTotalMinutes)}</td>
+        <td style="padding:8px;border:1px solid #e5e7eb;text-align:right">${fmtPct(house.heaters?.pctChange)}</td>
+      </tr>`;
+    })
+    .join('');
+}
+
+function liveRows(houses) {
+  return (houses || [])
+    .map((house) => {
+      const cells = LIVE_COLUMNS.map(
+        (col) =>
+          `<td style="padding:8px;border:1px solid #e5e7eb;text-align:center">${conditionsCell(house, col.key, true)}</td>`,
+      ).join('');
+      return `<tr>
+        <td style="padding:8px;border:1px solid #e5e7eb">${house.houseName}</td>
+        ${cells}
+      </tr>`;
+    })
+    .join('');
+}
+
 function connectionHtml(house) {
   return house.connectionStatus === 1
     ? '<span style="color:#16a34a">Online</span>'
@@ -368,7 +469,10 @@ function buildEmail(report, recipientEmail, reportPeriod) {
   const connected = (report.houses || []).filter((h) => h.connectionStatus === 1).length;
   const total = (report.houses || []).length;
 
-  const { expanded, healthy } = partitionHouses(report.houses, report.alerts);
+  const houses = report.houses || [];
+  const { expanded, healthy } = partitionHouses(houses, report.alerts);
+  const wHeaders = waterDayHeaders(houses);
+  const hHeaders = heaterDayHeaders(houses);
   const groupedAlerts = groupAlertsByHouse(report.alerts || []);
   const alertsHtml =
     groupedAlerts.length === 0
@@ -419,6 +523,68 @@ function buildEmail(report, recipientEmail, reportPeriod) {
     <tbody>${healthy.length ? healthy.map((house) => collapsedRow(house)).join('') : '<tr><td colspan="11" style="padding:8px;border:1px solid #e5e7eb;color:#6b7280">None</td></tr>'}</tbody>
   </table>
   <p style="color:#6b7280;font-size:12px;margin-top:8px">Water so far is this run’s in-progress total. Yesterday this time is the same 6 AM or 6 PM snapshot from about 24 hours earlier. If that snapshot is missing, today’s number stays and the compare is left blank. Full-day Δ% compares the last two completed flock days. An unfinished day at zero is not an alert.</p>
+
+  <h2 style="margin-top:28px">Live conditions</h2>
+  <p style="color:#6b7280;font-size:13px;margin-top:0">Every house. Temperature is average / set point / outside.</p>
+  <table style="border-collapse:collapse;width:100%;font-size:13px;margin-top:8px">
+    <thead>
+      <tr style="background:#f0fdf4">
+        <th style="padding:8px;border:1px solid #e5e7eb;text-align:left">House</th>
+        ${LIVE_COLUMNS.map((col) => `<th style="padding:8px;border:1px solid #e5e7eb">${col.label}</th>`).join('')}
+      </tr>
+    </thead>
+    <tbody>${liveRows(houses)}</tbody>
+  </table>
+
+  <h2 style="margin-top:28px">Water — Last 3 Flock Days</h2>
+  <p style="color:#6b7280;font-size:13px;margin-top:0">Daily water total per house (Rotem history, by flock day).</p>
+  <table style="border-collapse:collapse;width:100%;font-size:14px;margin-top:8px">
+    <thead>
+      <tr style="background:#eff6ff">
+        <th style="padding:8px;border:1px solid #e5e7eb;text-align:left">House</th>
+        <th style="padding:8px;border:1px solid #e5e7eb">Current day</th>
+        <th style="padding:8px;border:1px solid #e5e7eb">Status</th>
+        ${wHeaders.map((header) => `<th style="padding:8px;border:1px solid #e5e7eb">${header}</th>`).join('')}
+      </tr>
+    </thead>
+    <tbody>${waterDetailRows(houses, wHeaders)}</tbody>
+  </table>
+
+  <h2 style="margin-top:28px">Heater Runtime — Last 2 Flock Days</h2>
+  <p style="color:#6b7280;font-size:13px;margin-top:0">Per-day heater runtime and 2-day total per house.</p>
+  <table style="border-collapse:collapse;width:100%;font-size:14px;margin-top:8px">
+    <thead>
+      <tr style="background:#fff7ed">
+        <th style="padding:8px;border:1px solid #e5e7eb;text-align:left">House</th>
+        <th style="padding:8px;border:1px solid #e5e7eb">Current day</th>
+        <th style="padding:8px;border:1px solid #e5e7eb">Status</th>
+        ${hHeaders.map((header) => `<th style="padding:8px;border:1px solid #e5e7eb">${header}</th>`).join('')}
+        <th style="padding:8px;border:1px solid #e5e7eb">2-day total</th>
+      </tr>
+    </thead>
+    <tbody>${heaterDetailRows(houses, hHeaders)}</tbody>
+  </table>
+
+  <h2 style="margin-top:28px">Day-over-Day Summary</h2>
+  <table style="border-collapse:collapse;width:100%;font-size:14px;margin-top:8px">
+    <thead>
+      <tr style="background:#f3f4f6">
+        <th style="padding:8px;border:1px solid #e5e7eb;text-align:left">House</th>
+        <th style="padding:8px;border:1px solid #e5e7eb">Day</th>
+        <th style="padding:8px;border:1px solid #e5e7eb">Status</th>
+        <th style="padding:8px;border:1px solid #e5e7eb">Water so far</th>
+        <th style="padding:8px;border:1px solid #e5e7eb">Yesterday this time</th>
+        <th style="padding:8px;border:1px solid #e5e7eb">Δ gal</th>
+        <th style="padding:8px;border:1px solid #e5e7eb">Δ %</th>
+        <th style="padding:8px;border:1px solid #e5e7eb">Last full day</th>
+        <th style="padding:8px;border:1px solid #e5e7eb">Full-day Δ%</th>
+        <th style="padding:8px;border:1px solid #e5e7eb">Heater today</th>
+        <th style="padding:8px;border:1px solid #e5e7eb">Heater prior</th>
+        <th style="padding:8px;border:1px solid #e5e7eb">Heater Δ%</th>
+      </tr>
+    </thead>
+    <tbody>${summaryRows(houses)}</tbody>
+  </table>
   <p style="color:#9ca3af;font-size:12px;margin-top:32px">Generated by n8n Poultry RotemNet workflow · ${report.reportTime}</p>
 </body>
 </html>`;
@@ -453,6 +619,31 @@ function buildEmail(report, recipientEmail, reportPeriod) {
     textLines.push('  None.');
   } else {
     for (const house of healthy) textLines.push(`  ${collapsedLine(house)}`);
+  }
+
+  textLines.push('', 'Live conditions:');
+  for (const house of houses) {
+    textLines.push(`  ${house.houseName}: ${climateText(house, false)}`);
+  }
+
+  textLines.push('', 'Water — Last 3 flock days:');
+  for (const house of houses) {
+    textLines.push(`  ${house.houseName}: ${waterHistoryText(house)}`);
+  }
+
+  textLines.push('', 'Heater — Last 2 flock days (total):');
+  for (const house of houses) {
+    textLines.push(
+      `  ${house.houseName}: ${heaterHistoryText(house)} | 2-day total: ${fmtMinutes(house.heaters?.last2DaysTotalMinutes)}`,
+    );
+  }
+
+  textLines.push('', 'Day-over-day summary:');
+  for (const house of houses) {
+    const slot = sameSlotFields(house);
+    textLines.push(
+      `  ${house.houseName} | water so far ${slot.soFarText} | yesterday this time ${slot.yesterdayText} | same-time ${slot.deltaGalText} gal (${slot.deltaPctText}) | last full day ${fmtNum(house.water?.yesterdayTotal)} | full-day ${fullDayPctText(house)} | heater ${fmtMinutes(house.heaters?.todayTotalMinutes)} vs prior ${fmtMinutes(house.heaters?.yesterdayTotalMinutes)} (${fmtPct(house.heaters?.pctChange)})`,
+    );
   }
 
   return {
