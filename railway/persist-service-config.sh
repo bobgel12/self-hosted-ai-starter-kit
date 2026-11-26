@@ -95,7 +95,8 @@ if [ "$status" -ne 0 ]; then
   rm -f "$output"
   exit "$status"
 fi
-if ! grep -q '"committed": true' "$output"; then
+# Railway prints {"committed":true} with no space. script(1) may also add CRs.
+if ! tr -d '\r' <"$output" | grep -Eq '"committed"[[:space:]]*:[[:space:]]*true'; then
   echo "Railway did not commit the service settings." >&2
   rm -f "$output"
   exit 1
