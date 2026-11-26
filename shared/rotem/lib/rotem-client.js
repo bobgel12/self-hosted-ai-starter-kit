@@ -151,6 +151,7 @@ function blankConditions() {
     insideHumidity: null,
     staticPressure: null,
     pressureUnit: null,
+    targetPressure: null,
     ventLevel: null,
   };
 }
@@ -190,7 +191,7 @@ function applyControllerSnapshot(conditions, house) {
 
   fill('Temperature', 'averageTemperature', 'setTemperature', 'temperatureUnit');
   fill('Humidity', 'insideHumidity', null, null);
-  fill('Pressure', 'staticPressure', null, 'pressureUnit');
+  fill('Pressure', 'staticPressure', 'targetPressure', 'pressureUnit');
   fill('VentLevel', 'ventLevel', null, null);
   return conditions;
 }
@@ -214,6 +215,7 @@ function parseLiveHouseData(responseObj) {
   conditions.insideHumidity = optionalNumber(general.get('Inside_Humidity'));
   conditions.staticPressure = optionalNumber(general.get('Static_Pressure'));
   conditions.pressureUnit = unitFromView(generalView, 'Static_Pressure');
+  conditions.targetPressure = optionalNumber(general.get('Target_Pressure'));
   conditions.ventLevel = optionalNumber(general.get('Vent_Level'));
 
   return { growthDay, dailyWater, conditions };

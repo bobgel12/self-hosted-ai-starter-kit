@@ -14,6 +14,8 @@ const { RotemClient } = require('./rotem-client');
 const { runPool, parseConcurrencyEnv } = require('./concurrency');
 const {
   loadSnapshot,
+  loadSameSlotSnapshot,
+  attachSameSlotWater,
   saveSnapshot,
   compareWithSnapshot,
   detectAnomalies,
@@ -184,6 +186,7 @@ async function processFarm(farm, globalConfig, thresholds, options = {}) {
 
   const previous = loadSnapshot(farm.id);
   let enriched = compareWithSnapshot(report, previous);
+  enriched = attachSameSlotWater(enriched, loadSameSlotSnapshot(farm.id, reportPeriod));
   enriched = detectAnomalies(enriched, thresholds);
   enriched.reportPeriod = reportPeriod;
   enriched.recipientEmail = recipientEmail;

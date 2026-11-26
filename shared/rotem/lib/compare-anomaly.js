@@ -25,6 +25,100 @@ function loadSnapshot(farmId) {
   }
 }
 
+/**
+ * Prior 6 AM or 6 PM run, about 24h earlier. Command 40 is daily history, so
+ * "yesterday at this time" is our own snapshot, not another Rotem call.
+ * latest.json is the most recent run (often 12h ago) and is not this slot.
+ */
+function loadSameSlotSnapshot(farmId, reportPeriod, now = new Date()) {
+  if (!farmId || (reportPeriod !== 'am' && reportPeriod !== 'pm')) return null;
+  const dir = path.join(HISTORY_DIR, farmId);
+  if (!fs.existsSync(dir)) return null;
+
+  let names;
+  try {
+    names = fs.readdirSync(dir);
+  } catch {
+    return null;
+  }
+
+  const suffix = `-${reportPeriod}.json`;
+  const target = now.getTime() - 24 * 60 * 60 * 1000;
+  const minMs = 18 * 60 * 60 * 1000;
+  const maxMs = 30 * 60 * 60 * 1000;
+  let best = null;
+  let bestDist = Infinity;
+
+  for (const name of names) {
+    if (!name.endsWith(suffix)) continue;
+    let snapshot;
+    try {
+      snapshot = JSON.parse(fs.readFileSync(path.join(dir, name), 'utf8'));
+    } catch {
+      continue;
+    }
+    if (snapshot.reportPeriod && snapshot.reportPeriod !== reportPeriod) continue;
+
+    const savedMs = snapshot.savedAt ? new Date(snapshot.savedAt).getTime() : NaN;
+    let when = savedMs;
+    if (Number.isNaN(when)) {
+      const match = name.match(/^(\d{4}-\d{2}-\d{2})-/);
+      if (!match) continue;
+      when = new Date(`${match[1]}T12:00:00Z`).getTime();
+    }
+    const age = now.getTime() - when;
+    if (age < minMs || age > maxMs) continue;
+    const dist = Math.abs(when - target);
+    if (dist < bestDist) {
+      best = snapshot;
+      bestDist = dist;
+    }
+  }
+
+  return best;
+}
+
+function attachSameSlotWater(report, snapshot) {
+  const prevByHouse = {};
+  for (const house of snapshot?.houses || []) {
+    prevByHouse[house.houseNumber] = house;
+  }
+
+  const houses = (report.houses || []).map((house) => {
+    const today = house.water?.todayTotal;
+    const prev = prevByHouse[house.houseNumber];
+    const yesterday = prev?.waterTodayTotal;
+    const todayMissing = today == null || Number.isNaN(Number(today));
+    const yesterdayMissing = prev == null || yesterday == null || Number.isNaN(Number(yesterday));
+    if (todayMissing || yesterdayMissing) {
+      return {
+        ...house,
+        sameSlot: {
+          hasPrevious: false,
+          waterSoFar: todayMissing ? null : Number(today),
+        },
+      };
+    }
+
+    const waterSoFar = Number(today);
+    const yesterdayWater = Number(yesterday);
+    const delta = waterSoFar - yesterdayWater;
+    return {
+      ...house,
+      sameSlot: {
+        hasPrevious: true,
+        savedAt: snapshot.savedAt || null,
+        waterSoFar,
+        yesterdayWater,
+        deltaGallons: Math.round(delta * 10) / 10,
+        deltaPct: yesterdayWater > 0 ? Math.round((delta / yesterdayWater) * 1000) / 10 : null,
+      },
+    };
+  });
+
+  return { ...report, houses };
+}
+
 function saveSnapshot(report, reportPeriod) {
   const farmId = report.farmId;
   const dir = path.join(HISTORY_DIR, farmId);
@@ -144,6 +238,85 @@ function snapshotAgeHours(savedAt) {
   return ageMs / (1000 * 60 * 60);
 }
 
+function looksLikeFahrenheit(unit) {
+  const text = String(unit || '').toLowerCase();
+  return text.includes('f') && !text.includes('c');
+}
+
+function pushClimateAlerts(alerts, house, thresholds) {
+  const rules = thresholds || {};
+  const label = `${house.houseName} (#${house.houseNumber})`;
+  const conditions = house.conditions || {};
+
+  const tempRule = rules.temperatureFromSetPoint || {};
+  if (
+    tempRule.enabled &&
+    conditions.averageTemperature != null &&
+    conditions.setTemperature != null
+  ) {
+    const delta =
+      Math.round((Number(conditions.averageTemperature) - Number(conditions.setTemperature)) * 10) /
+      10;
+    const limit = looksLikeFahrenheit(conditions.temperatureUnit)
+      ? (tempRule.maxDeltaFahrenheit ?? 5)
+      : (tempRule.maxDelta ?? 3);
+    if (Math.abs(delta) >= limit) {
+      alerts.push({
+        severity: tempRule.severity || 'warning',
+        houseNumber: house.houseNumber,
+        houseName: house.houseName,
+        metric: 'temperature',
+        message: `${label} average temperature ${conditions.averageTemperature} is ${delta} from set point ${conditions.setTemperature} (threshold ±${limit}).`,
+        value: delta,
+      });
+    }
+  }
+
+  const humidityRule = rules.humidityExtreme || {};
+  if (humidityRule.enabled && conditions.insideHumidity != null) {
+    const min = humidityRule.min ?? 40;
+    const max = humidityRule.max ?? 85;
+    const humidity = Number(conditions.insideHumidity);
+    if (humidity < min || humidity > max) {
+      alerts.push({
+        severity: humidityRule.severity || 'warning',
+        houseNumber: house.houseNumber,
+        houseName: house.houseName,
+        metric: 'humidity',
+        message: `${label} humidity ${humidity}% is outside ${min}–${max}%.`,
+        value: humidity,
+      });
+    }
+  }
+
+  const pressureRule = rules.staticPressureFromTarget || {};
+  if (
+    pressureRule.enabled &&
+    conditions.staticPressure != null &&
+    conditions.targetPressure != null &&
+    Number(conditions.targetPressure) !== 0
+  ) {
+    const pct =
+      Math.round(
+        ((Number(conditions.staticPressure) - Number(conditions.targetPressure)) /
+          Number(conditions.targetPressure)) *
+          1000,
+      ) / 10;
+    const limit = pressureRule.maxPct ?? 30;
+    if (Math.abs(pct) >= limit) {
+      const unit = conditions.pressureUnit ? ` ${conditions.pressureUnit}` : '';
+      alerts.push({
+        severity: pressureRule.severity || 'warning',
+        houseNumber: house.houseNumber,
+        houseName: house.houseName,
+        metric: 'static_pressure',
+        message: `${label} static pressure ${conditions.staticPressure}${unit} is ${pct}% from target ${conditions.targetPressure}${unit} (threshold ±${limit}%).`,
+        value: pct,
+      });
+    }
+  }
+}
+
 function isSnapshotComparable(house, thresholds) {
   const comparison = house.comparison;
   if (!comparison?.hasPrevious) return false;
@@ -186,6 +359,8 @@ function detectAnomalies(report, thresholds) {
       continue;
     }
 
+    pushClimateAlerts(alerts, house, t);
+
     const growthDay = house.growthDay;
     if (growthDay == null || growthDay < 1) {
       continue;
@@ -204,18 +379,24 @@ function detectAnomalies(report, thresholds) {
     const heaterPct = house.heaters?.pctChange;
     let flockHeaterPctAlert = false;
 
+    // Today's total is still in progress at 6 AM and 6 PM. A zero so far is
+    // not an alert. Only a finished flock day that ended at zero is.
+    const waterDays = house.water?.last3Days;
+    const finishedWaterDay =
+      Array.isArray(waterDays) && waterDays.length >= 3 ? waterDays[waterDays.length - 2] : null;
     if (
       !skipWaterRules &&
       t.waterZeroWithBirds?.enabled &&
-      growthDay >= (t.waterZeroWithBirds.minGrowthDay ?? 1) &&
-      waterToday === 0
+      finishedWaterDay &&
+      finishedWaterDay.total === 0 &&
+      (finishedWaterDay.growthDay ?? 0) >= (t.waterZeroWithBirds.minGrowthDay ?? 1)
     ) {
       alerts.push({
         severity: t.waterZeroWithBirds.severity || 'critical',
         houseNumber: house.houseNumber,
         houseName: house.houseName,
         metric: 'water',
-        message: `${label} has zero water consumption on growth day ${growthDay}.`,
+        message: `${label} had zero water on completed growth day ${finishedWaterDay.growthDay}. Today's total is still in progress and is not a zero-water alert.`,
       });
     }
 
@@ -354,6 +535,8 @@ function filterFarmsForSchedule(farms, timezone) {
 module.exports = {
   HISTORY_DIR,
   loadSnapshot,
+  loadSameSlotSnapshot,
+  attachSameSlotWater,
   saveSnapshot,
   compareWithSnapshot,
   detectAnomalies,

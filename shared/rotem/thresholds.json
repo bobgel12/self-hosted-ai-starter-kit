@@ -32,5 +32,22 @@
     "maxGrowthDay": 14,
     "minYesterdayMinutes": 30,
     "severity": "warning"
+  },
+  "temperatureFromSetPoint": {
+    "enabled": true,
+    "maxDelta": 3,
+    "maxDeltaFahrenheit": 5,
+    "severity": "warning"
+  },
+  "humidityExtreme": {
+    "enabled": true,
+    "min": 40,
+    "max": 85,
+    "severity": "warning"
+  },
+  "staticPressureFromTarget": {
+    "enabled": true,
+    "maxPct": 30,
+    "severity": "warning"
   }
 }
