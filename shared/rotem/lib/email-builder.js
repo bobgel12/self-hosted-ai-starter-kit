@@ -1,6 +1,6 @@
 'use strict';
 
-const { completedWaterChange } = require('./compare-anomaly');
+const { completedWaterChange, completedHeaterChange } = require('./compare-anomaly');
 
 function fmtNum(n) {
   if (n == null) return '—';
@@ -166,9 +166,27 @@ function waterHistoryText(house) {
 }
 
 function heaterHistoryText(house) {
-  const days = house.heaters?.last2Days ?? [];
+  const days = house.heaters?.last3Days ?? [];
   if (!days.length) return '—';
   return days.map((d) => `day ${d.growthDay}: ${fmtMinutes(d.total)}`).join(', ');
+}
+
+function heaterDeltaText(house) {
+  const change = completedHeaterChange(house);
+  if (!change) return '—';
+  return `${fmtPct(change.pct)} · day ${change.completedDay} vs day ${change.priorDay}`;
+}
+
+function heaterFullDayText(house) {
+  const change = completedHeaterChange(house);
+  if (!change) return '—';
+  return fmtMinutes(change.completedTotal);
+}
+
+function completedHeaterTotalText(house) {
+  const change = completedHeaterChange(house);
+  if (!change) return '—';
+  return fmtMinutes(change.totalMinutes);
 }
 
 function climateText(house, html) {
@@ -182,8 +200,8 @@ function waterDayHeaders(houses) {
 }
 
 function heaterDayHeaders(houses) {
-  const sample = (houses || []).find((h) => h.heaters?.last2Days?.length)?.heaters.last2Days;
-  if (!sample?.length) return ['Prior day', 'Latest day'];
+  const sample = (houses || []).find((h) => h.heaters?.last3Days?.length)?.heaters.last3Days;
+  if (!sample?.length) return ['Day −2', 'Day −1', 'Today'];
   return sample.map((d) => `Day ${d.growthDay}`);
 }
 
@@ -219,7 +237,7 @@ function waterDetailRows(houses, headers) {
 function heaterDetailRows(houses, headers) {
   return (houses || [])
     .map((house) => {
-      const days = house.heaters?.last2Days ?? [];
+      const days = house.heaters?.last3Days ?? [];
       const cells = days.length
         ? days
             .map(
@@ -233,7 +251,8 @@ function heaterDetailRows(houses, headers) {
         <td style="padding:8px;border:1px solid #e5e7eb;text-align:center">${fmtNum(house.growthDay)}</td>
         <td style="padding:8px;border:1px solid #e5e7eb;text-align:center">${connectionHtml(house)}</td>
         ${cells}
-        <td style="padding:8px;border:1px solid #e5e7eb;text-align:right;font-weight:600">${fmtMinutes(house.heaters?.last2DaysTotalMinutes)}</td>
+        <td style="padding:8px;border:1px solid #e5e7eb;text-align:right;font-weight:600">${completedHeaterTotalText(house)}</td>
+        <td style="padding:8px;border:1px solid #e5e7eb;text-align:right">${heaterDeltaText(house)}</td>
       </tr>`;
     })
     .join('');
@@ -254,8 +273,8 @@ function summaryRows(houses) {
         <td style="padding:8px;border:1px solid #e5e7eb;text-align:right">${fmtNum(house.water?.yesterdayTotal)}</td>
         <td style="padding:8px;border:1px solid #e5e7eb;text-align:right">${fullDayPctText(house)}</td>
         <td style="padding:8px;border:1px solid #e5e7eb;text-align:right">${fmtMinutes(house.heaters?.todayTotalMinutes)}</td>
-        <td style="padding:8px;border:1px solid #e5e7eb;text-align:right">${fmtMinutes(house.heaters?.yesterdayTotalMinutes)}</td>
-        <td style="padding:8px;border:1px solid #e5e7eb;text-align:right">${fmtPct(house.heaters?.pctChange)}</td>
+        <td style="padding:8px;border:1px solid #e5e7eb;text-align:right">${heaterFullDayText(house)}</td>
+        <td style="padding:8px;border:1px solid #e5e7eb;text-align:right">${heaterDeltaText(house)}</td>
       </tr>`;
     })
     .join('');
@@ -342,7 +361,7 @@ function expandedHouseHtml(entry) {
       <ul style="margin:0 0 8px;padding-left:18px">${reasons}</ul>
       <p style="margin:4px 0">Water so far <strong>${slot.soFarText}</strong> gal · yesterday this time <strong>${slot.yesterdayText}</strong> · ${slot.deltaGalText} gal (${slot.deltaPctText})</p>
       <p style="margin:4px 0">Full-day Δ% <strong>${fullDayPctText(house)}</strong> · last 3 flock days: ${waterHistoryText(house)}</p>
-      <p style="margin:4px 0">Heater runtime: ${heaterHistoryText(house)} · 2-day total ${fmtMinutes(house.heaters?.last2DaysTotalMinutes)}</p>
+      <p style="margin:4px 0">Heater today <strong>${fmtMinutes(house.heaters?.todayTotalMinutes)}</strong> · last 3 flock days: ${heaterHistoryText(house)} · completed days total ${completedHeaterTotalText(house)} · day-to-day ${heaterDeltaText(house)}</p>
       <p style="margin:4px 0">${climateText(house, true)}</p>
     </section>`;
 }
@@ -358,7 +377,7 @@ function expandedHouseText(entry) {
     `    water so far ${slot.soFarText} | yesterday this time ${slot.yesterdayText} | same-time ${slot.deltaGalText} gal (${slot.deltaPctText}) | full-day ${fullDayPctText(house)} | ${waterHistoryText(house)}`,
   );
   lines.push(
-    `    heater ${heaterHistoryText(house)} | 2-day total ${fmtMinutes(house.heaters?.last2DaysTotalMinutes)}`,
+    `    heater today ${fmtMinutes(house.heaters?.todayTotalMinutes)} | ${heaterHistoryText(house)} | completed days total ${completedHeaterTotalText(house)} | day-to-day ${heaterDeltaText(house)}`,
   );
   lines.push(`    ${climateText(house, false)}`);
   return lines.join('\n');
@@ -550,8 +569,8 @@ function buildEmail(report, recipientEmail, reportPeriod) {
     <tbody>${waterDetailRows(houses, wHeaders)}</tbody>
   </table>
 
-  <h2 style="margin-top:28px">Heater Runtime — Last 2 Flock Days</h2>
-  <p style="color:#6b7280;font-size:13px;margin-top:0">Per-day heater runtime and 2-day total per house.</p>
+  <h2 style="margin-top:28px">Heater Runtime — Last 3 Flock Days</h2>
+  <p style="color:#6b7280;font-size:13px;margin-top:0">Per-day heater runtime for every house. The newest day is still in progress. Completed days total adds the two finished days used for the day-to-day change and leaves out today.</p>
   <table style="border-collapse:collapse;width:100%;font-size:14px;margin-top:8px">
     <thead>
       <tr style="background:#fff7ed">
@@ -559,7 +578,8 @@ function buildEmail(report, recipientEmail, reportPeriod) {
         <th style="padding:8px;border:1px solid #e5e7eb">Current day</th>
         <th style="padding:8px;border:1px solid #e5e7eb">Status</th>
         ${hHeaders.map((header) => `<th style="padding:8px;border:1px solid #e5e7eb">${header}</th>`).join('')}
-        <th style="padding:8px;border:1px solid #e5e7eb">2-day total</th>
+        <th style="padding:8px;border:1px solid #e5e7eb">Completed days total</th>
+        <th style="padding:8px;border:1px solid #e5e7eb">Day-to-day Δ%</th>
       </tr>
     </thead>
     <tbody>${heaterDetailRows(houses, hHeaders)}</tbody>
@@ -579,12 +599,13 @@ function buildEmail(report, recipientEmail, reportPeriod) {
         <th style="padding:8px;border:1px solid #e5e7eb">Last full day</th>
         <th style="padding:8px;border:1px solid #e5e7eb">Full-day Δ%</th>
         <th style="padding:8px;border:1px solid #e5e7eb">Heater today</th>
-        <th style="padding:8px;border:1px solid #e5e7eb">Heater prior</th>
-        <th style="padding:8px;border:1px solid #e5e7eb">Heater Δ%</th>
+        <th style="padding:8px;border:1px solid #e5e7eb">Heater full day</th>
+        <th style="padding:8px;border:1px solid #e5e7eb">Day-to-day Δ%</th>
       </tr>
     </thead>
     <tbody>${summaryRows(houses)}</tbody>
   </table>
+  <p style="color:#6b7280;font-size:12px;margin-top:8px">Heater today is this run’s in-progress total. Heater full day is the last completed flock day. Day-to-day Δ% compares that completed day with the completed day before it.</p>
   <p style="color:#9ca3af;font-size:12px;margin-top:32px">Generated by n8n Poultry RotemNet workflow · ${report.reportTime}</p>
 </body>
 </html>`;
@@ -631,10 +652,10 @@ function buildEmail(report, recipientEmail, reportPeriod) {
     textLines.push(`  ${house.houseName}: ${waterHistoryText(house)}`);
   }
 
-  textLines.push('', 'Heater — Last 2 flock days (total):');
+  textLines.push('', 'Heater — Last 3 flock days:');
   for (const house of houses) {
     textLines.push(
-      `  ${house.houseName}: ${heaterHistoryText(house)} | 2-day total: ${fmtMinutes(house.heaters?.last2DaysTotalMinutes)}`,
+      `  ${house.houseName}: ${heaterHistoryText(house)} | completed days total: ${completedHeaterTotalText(house)} | day-to-day ${heaterDeltaText(house)}`,
     );
   }
 
@@ -642,7 +663,7 @@ function buildEmail(report, recipientEmail, reportPeriod) {
   for (const house of houses) {
     const slot = sameSlotFields(house);
     textLines.push(
-      `  ${house.houseName} | water so far ${slot.soFarText} | yesterday this time ${slot.yesterdayText} | same-time ${slot.deltaGalText} gal (${slot.deltaPctText}) | last full day ${fmtNum(house.water?.yesterdayTotal)} | full-day ${fullDayPctText(house)} | heater ${fmtMinutes(house.heaters?.todayTotalMinutes)} vs prior ${fmtMinutes(house.heaters?.yesterdayTotalMinutes)} (${fmtPct(house.heaters?.pctChange)})`,
+      `  ${house.houseName} | water so far ${slot.soFarText} | yesterday this time ${slot.yesterdayText} | same-time ${slot.deltaGalText} gal (${slot.deltaPctText}) | last full day ${fmtNum(house.water?.yesterdayTotal)} | full-day ${fullDayPctText(house)} | heater today ${fmtMinutes(house.heaters?.todayTotalMinutes)} | heater full day ${heaterFullDayText(house)} | day-to-day ${heaterDeltaText(house)}`,
     );
   }
 
