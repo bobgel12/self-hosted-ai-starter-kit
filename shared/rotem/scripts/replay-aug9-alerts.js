@@ -23,6 +23,7 @@ function house({
   heaterYday,
   heaterPct,
   heaterLast2,
+  heaterLast3,
 }) {
   return {
     houseNumber: n,
@@ -40,6 +41,7 @@ function house({
       yesterdayTotalMinutes: heaterYday,
       pctChange: heaterPct,
       last2Days: heaterLast2,
+      last3Days: heaterLast3,
     },
   };
 }
@@ -281,9 +283,14 @@ function main() {
           waterPct: 14.3,
           waterLast3: days([[6, 600], [7, 700], [8, 800]]),
           heaterToday: 0,
-          heaterYday: 120,
+          heaterYday: 60,
           heaterPct: -100,
-          heaterLast2: days([[7, 120], [8, 0]]),
+          heaterLast2: days([[7, 60], [8, 0]]),
+          heaterLast3: days([
+            [6, 120],
+            [7, 60],
+            [8, 0],
+          ]),
         }),
       ],
     },
@@ -291,11 +298,91 @@ function main() {
   );
   assert(
     broodDrop.alerts.some((a) => a.metric === 'heater' && a.message.includes('zero heater')),
-    'brood house dropping from 2h heat to 0 should still alert',
+    'brood house dropping from heat yesterday to 0 today should still alert',
   );
   assert(
-    broodDrop.alerts.some((a) => a.metric === 'heater' && a.message.includes('changed')),
-    'brood house heater % vs prior day should still alert (baseline 120m, -100%)',
+    broodDrop.alerts.some(
+      (a) => a.metric === 'heater' && a.message.includes('changed') && a.message.includes('day 7 vs day 6'),
+    ),
+    'brood house heater % must use completed days (day 7 vs day 6, baseline 120m, -50%)',
+  );
+
+  const inProgressHeaterSwing = detectAnomalies(
+    {
+      houses: [
+        house({
+          n: 1,
+          day: 8,
+          waterToday: 800,
+          waterYday: 700,
+          waterPct: 14.3,
+          waterLast3: days([
+            [6, 600],
+            [7, 700],
+            [8, 800],
+          ]),
+          heaterToday: 0,
+          heaterYday: 80,
+          heaterPct: -100,
+          heaterLast2: days([
+            [7, 80],
+            [8, 0],
+          ]),
+          heaterLast3: days([
+            [6, 40],
+            [7, 40],
+            [8, 0],
+          ]),
+        }),
+      ],
+    },
+    thresholds,
+  );
+  assert(
+    !inProgressHeaterSwing.alerts.some((a) => a.metric === 'heater' && a.message.includes('changed')),
+    `in-progress heater drop must not raise a day-to-day % alert, got ${inProgressHeaterSwing.alerts.map((a) => a.message).join(' | ')}`,
+  );
+  assert(
+    inProgressHeaterSwing.alerts.some((a) => a.metric === 'heater' && a.message.includes('zero heater')),
+    'zero heater on the in-progress day still alerts when the prior flock day ran',
+  );
+
+  const completedHeaterDrop = detectAnomalies(
+    {
+      houses: [
+        house({
+          n: 1,
+          day: 8,
+          waterToday: 800,
+          waterYday: 700,
+          waterPct: 14.3,
+          waterLast3: days([
+            [6, 650],
+            [7, 700],
+            [8, 800],
+          ]),
+          heaterToday: 40,
+          heaterYday: 40,
+          heaterPct: 0,
+          heaterLast2: days([
+            [7, 40],
+            [8, 40],
+          ]),
+          heaterLast3: days([
+            [6, 100],
+            [7, 40],
+            [8, 40],
+          ]),
+        }),
+      ],
+    },
+    thresholds,
+  );
+  assert(
+    completedHeaterDrop.alerts.some(
+      (a) => a.metric === 'heater' && a.message.includes('-60%') && a.message.includes('day 7 vs day 6'),
+    ),
+    'completed-day heater drop (100m to 40m) should alert even when today matches yesterday',
   );
 
   const disconnected = detectAnomalies(

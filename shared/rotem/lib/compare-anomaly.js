@@ -231,6 +231,36 @@ function completedWaterChange(house) {
   };
 }
 
+/**
+ * Heater day-to-day % uses the last two finished flock days. The newest
+ * history row is the in-progress day and is not the delta.
+ * Both days at zero is 0%. A zero prior day with a later total has no percent.
+ */
+function completedHeaterChange(house) {
+  const days = house.heaters?.last3Days;
+  if (!Array.isArray(days) || days.length < 3) return null;
+  const prior = days[days.length - 3];
+  const completed = days[days.length - 2];
+  if (prior?.total == null || completed?.total == null) return null;
+  const priorTotal = Number(prior.total);
+  const completedTotal = Number(completed.total);
+  if (Number.isNaN(priorTotal) || Number.isNaN(completedTotal)) return null;
+  const pct =
+    priorTotal === 0
+      ? completedTotal === 0
+        ? 0
+        : null
+      : Math.round(((completedTotal - priorTotal) / priorTotal) * 1000) / 10;
+  return {
+    completedDay: completed.growthDay,
+    priorDay: prior.growthDay,
+    completedTotal,
+    priorTotal,
+    pct,
+    totalMinutes: priorTotal + completedTotal,
+  };
+}
+
 function snapshotAgeHours(savedAt) {
   if (!savedAt) return Infinity;
   const ageMs = Date.now() - new Date(savedAt).getTime();
@@ -371,12 +401,12 @@ function detectAnomalies(report, thresholds) {
     const heaterToday = house.heaters?.todayTotalMinutes ?? 0;
     const heaterYesterday = house.heaters?.yesterdayTotalMinutes ?? 0;
     const waterHistoryMissing = lastNAllNull(house.water?.last3Days);
-    const heaterHistoryMissing = lastNAllNull(house.heaters?.last2Days);
+    const heaterHistoryMissing = lastNAllNull(house.heaters?.last3Days);
     const skipWaterRules = waterHistoryMissing && waterToday === 0;
     const skipHeaterRules = heaterHistoryMissing && heaterToday === 0;
 
     const completedWater = completedWaterChange(house);
-    const heaterPct = house.heaters?.pctChange;
+    const completedHeater = completedHeaterChange(house);
     let flockHeaterPctAlert = false;
 
     // Today's total is still in progress at 6 AM and 6 PM. A zero so far is
@@ -449,21 +479,22 @@ function detectAnomalies(report, thresholds) {
     if (
       !skipHeaterRules &&
       heaterPctRule.enabled &&
-      heaterPct != null &&
+      completedHeater &&
+      completedHeater.pct != null &&
       growthDay >= heaterPctMinDay &&
       growthDay <= heaterPctMaxDay &&
-      heaterYesterday >= heaterMinBaseline
+      completedHeater.priorTotal >= heaterMinBaseline
     ) {
       const limit = heaterPctRule.threshold ?? 50;
-      if (Math.abs(heaterPct) >= limit) {
+      if (Math.abs(completedHeater.pct) >= limit) {
         flockHeaterPctAlert = true;
         alerts.push({
           severity: heaterPctRule.severity || 'warning',
           houseNumber: house.houseNumber,
           houseName: house.houseName,
           metric: 'heater',
-          message: `${label} heater runtime changed ${heaterPct}% vs prior growth day (threshold ±${limit}%).`,
-          value: heaterPct,
+          message: `${label} heater runtime changed ${completedHeater.pct}% vs prior completed growth day (day ${completedHeater.completedDay} vs day ${completedHeater.priorDay}, threshold ±${limit}%). Today's runtime is still in progress.`,
+          value: completedHeater.pct,
         });
       }
     }
@@ -545,4 +576,5 @@ module.exports = {
   lastNAllNull,
   isSnapshotComparable,
   completedWaterChange,
+  completedHeaterChange,
 };

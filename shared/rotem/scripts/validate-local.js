@@ -64,11 +64,11 @@ const mockReport = {
         todayTotalMinutes: 500,
         yesterdayTotalMinutes: 400,
         pctChange: 25,
-        last2Days: [
+        last3Days: [
+          { growthDay: 19, total: 320 },
           { growthDay: 20, total: 400 },
           { growthDay: 21, total: 500 },
         ],
-        last2DaysTotalMinutes: 900,
         devices: [],
         historyRows: [],
       },
@@ -388,17 +388,35 @@ async function main() {
     }
     for (const needle of [
       'Water — Last 3 Flock Days',
-      'Heater Runtime — Last 2 Flock Days',
+      'Heater Runtime — Last 3 Flock Days',
       'Day-over-Day Summary',
       'Yesterday this time',
       'Heater today',
+      'Heater full day',
+      'Day-to-day Δ%',
       'Last full day',
+      'Completed days total',
     ]) {
       assertIncludes(html, needle, 'full tables');
     }
-    const waterBlock = text.split('Water — Last 3 flock days:')[1]?.split('Heater — Last 2 flock days')[0] || '';
-    const heaterBlock = text.split('Heater — Last 2 flock days (total):')[1]?.split('Day-over-day summary:')[0] || '';
+    if (html.includes('2-day total') || html.includes('Last 2 Flock')) {
+      throw new Error('heater block still labels a 2-day total beside 3 flock days');
+    }
+    const heaterHtml = html.split('Heater Runtime — Last 3 Flock Days')[1]?.split('Day-over-Day Summary')[0] || '';
+    for (const needle of ['House 1', 'House 2', '5h 20m', '6h 40m', '8h 20m', '12h 0m', '+25%', 'day 20 vs day 19']) {
+      assertIncludes(heaterHtml, needle, 'house heater html');
+    }
+    const waterBlock = text.split('Water — Last 3 flock days:')[1]?.split('Heater — Last 3 flock days:')[0] || '';
+    const heaterBlock = text.split('Heater — Last 3 flock days:')[1]?.split('Day-over-day summary:')[0] || '';
     const summaryBlock = text.split('Day-over-day summary:')[1] || '';
+    assertIncludes(
+      heaterBlock,
+      'House 1: day 19: 5h 20m, day 20: 6h 40m, day 21: 8h 20m',
+      'three heater days',
+    );
+    assertIncludes(heaterBlock, 'day-to-day +25% · day 20 vs day 19', 'completed-day heater delta');
+    assertIncludes(summaryBlock, 'heater today 10h 50m', 'in-progress heater today');
+    assertIncludes(summaryBlock, 'day-to-day +25% · day 20 vs day 19', 'summary completed-day delta');
     for (const houseName of ['House 1', 'House 2']) {
       assertIncludes(waterBlock, `${houseName}:`, 'every-house water');
       assertIncludes(heaterBlock, `${houseName}:`, 'every-house heater');
@@ -413,6 +431,13 @@ async function main() {
     }
     if ((second.report.alerts || []).some((a) => a.houseNumber === 1)) {
       throw new Error(`healthy house should stay collapsed, alerts: ${second.report.alerts.map((a) => a.message).join(' | ')}`);
+    }
+    const secondHeaterHtml =
+      second.email.html.split('Heater Runtime — Last 3 Flock Days')[1]?.split('Day-over-Day Summary')[0] || '';
+    assertIncludes(secondHeaterHtml, 'day 20 vs day 19', 'delta stays on completed days');
+    assertIncludes(secondHeaterHtml, '+25%', 'completed-day percent');
+    if (second.email.html.includes('+30%') || second.email.text.includes('vs prior')) {
+      throw new Error('day-to-day heater delta followed in-progress today instead of completed days');
     }
 
     assertFailureEmails();

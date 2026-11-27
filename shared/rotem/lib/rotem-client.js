@@ -311,10 +311,6 @@ function lastNGrowthDays(history, currentGrowthDay, count, valueField = 'total')
   return rows;
 }
 
-function sumLastNDays(rows) {
-  return rows.reduce((sum, r) => sum + (r.total ?? 0), 0);
-}
-
 function commandDataReady(body) {
   const payload = unwrapResponse(body);
   const ds = payload?.dsData;
@@ -351,8 +347,7 @@ function emptyHouseReport(house, errorMessage, liveData) {
       todayTotalMinutes: null,
       yesterdayTotalMinutes: null,
       pctChange: null,
-      last2Days: [],
-      last2DaysTotalMinutes: null,
+      last3Days: [],
       devices: [],
       historyRows: [],
     },
@@ -767,8 +762,7 @@ class RotemClient {
     const yesterdayHeaterMinutes = yesterdayHeater?.totalMinutes ?? 0;
 
     const waterLast3Days = lastNGrowthDays(waterHistory, currentGrowthDay, 3, 'total');
-    const heaterLast2Days = lastNGrowthDays(heaterHistory, currentGrowthDay, 2, 'totalMinutes');
-    const heaterLast2DaysTotal = sumLastNDays(heaterLast2Days);
+    const heaterLast3Days = lastNGrowthDays(heaterHistory, currentGrowthDay, 3, 'totalMinutes');
     const conditions = applyControllerSnapshot(
       {
         ...blankConditions(),
@@ -804,9 +798,10 @@ class RotemClient {
       heaters: {
         todayTotalMinutes: todayHeaterMinutes,
         yesterdayTotalMinutes: yesterdayHeaterMinutes,
+        // In-progress today versus the prior flock day. The email's day-to-day
+        // delta does not use this; it compares the last two completed days.
         pctChange: pctChange(todayHeaterMinutes, yesterdayHeaterMinutes),
-        last2Days: heaterLast2Days,
-        last2DaysTotalMinutes: heaterLast2DaysTotal,
+        last3Days: heaterLast3Days,
         devices: todayHeater?.devices ?? [],
         historyRows: heaterHistory,
       },
@@ -887,5 +882,4 @@ module.exports = {
   valueForGrowthDay,
   resolveCurrentGrowthDay,
   lastNGrowthDays,
-  sumLastNDays,
 };
